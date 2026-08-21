@@ -1752,10 +1752,20 @@ function TeamBadge({ team, size = 18 }) {
     <span
       title={team}
       style={{
-        width: size, height: size, minWidth: size, borderRadius: "50%",
-        background: color, color: "#fff", fontFamily: "Inter", fontWeight: 800,
-        fontSize: size * 0.52, display: "inline-flex", items: "center",
-        justifyContent: "center", lineHeight: 1, flexShrink: 0,
+        width: size,
+        height: size,
+        minWidth: size,
+        borderRadius: "50%",
+        background: color,
+        color: "#fff",
+        fontFamily: "Inter",
+        fontWeight: 800,
+        fontSize: size * 0.52,
+        display: "inline-flex",
+        alignItems: "center",      /* Fixed: Ensures vertical alignment */
+        justifyContent: "center",
+        lineHeight: 0,             /* Fixed: Prevents text baseline offset */
+        flexShrink: 0,
       }}
     >
       {letter}
