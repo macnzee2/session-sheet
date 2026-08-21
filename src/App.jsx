@@ -22,14 +22,14 @@ const COLORS = {
   line: "#FFFFFF",
 };
 
-// ✅ FIX: Use native crypto.randomUUID() for valid PostgreSQL UUIDs
+// Native crypto.randomUUID() for valid PostgreSQL UUIDs
 const uid = () => crypto.randomUUID();
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
 const THEME_CATEGORIES = ["Shooting", "Passing", "Dribbling", "Defending"];
 const FULL_GAME = "Full Game";
 const CONDITIONAL_GAME = "Conditional Game";
-const THEME_MARKER = "Theme"; // pseudo-category: phase resolves to whichever theme is selected
+const THEME_MARKER = "Theme"; 
 
 const DEFAULT_CATEGORIES = [
   "Warm-up", "Shooting", "Passing", "Defending", "Dribbling", CONDITIONAL_GAME, FULL_GAME,
@@ -178,7 +178,7 @@ function withTimeout(promise, ms = 4000) {
   ]);
 }
 
-// ---------- SUPABASE DATA LAYER ----------
+// SUPABASE DATA LAYER
 const FIELD_MAP = {
   drills: { timesUsed: "times_used" },
   sessions: { methodId: "method_id", methodName: "method_name" },
@@ -765,10 +765,13 @@ function PlanTab({ methods, drills, drillsByCategory, sessions, persistSessions,
     <div className="grid lg:grid-cols-[1fr_320px] gap-5">
       <div>
         <Card className="p-4 sm:p-5 mb-4">
-          <div className="grid sm:grid-cols-2 gap-3 mb-3">
+          <div className="grid sm:grid-cols-2 gap-3 mb-3 items-end">
+            {/* ✅ FIX 1: Compact date input */}
             <div>
               <Label>Date</Label>
-              <TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+              <div className="max-w-[170px]">
+                <TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+              </div>
             </div>
             <div>
               <Label>Coaching method</Label>
@@ -1043,6 +1046,7 @@ function HistoryTab({ sessions, drills, persistSessions, persistDrills, ratings,
   );
 }
 
+{/* ✅ FIX 2: Layout & overflow management so right side of Drills tab fits screen */}
 function DrillsTab({ drills, categories, persistDrills, persistCategories, avgRating, flash }) {
   const [name, setName] = useState("");
   const [category, setCategory] = useState(categories[0] || "");
@@ -1108,7 +1112,7 @@ function DrillsTab({ drills, categories, persistDrills, persistCategories, avgRa
   const shown = filter === "All" ? drills : drills.filter((d) => d.category === filter);
 
   return (
-    <div className="grid lg:grid-cols-[320px_1fr] gap-5">
+    <div className="grid lg:grid-cols-[320px_1fr] gap-5 min-w-0">
       <div className="space-y-4">
         <Card className="p-4">
           <div style={{ fontFamily: "Bebas Neue", color: COLORS.pitch }} className="text-lg mb-3">
@@ -1152,13 +1156,13 @@ function DrillsTab({ drills, categories, persistDrills, persistCategories, avgRa
         </Card>
       </div>
 
-      <div>
-        <div className="flex items-center gap-2 mb-3 overflow-x-auto pb-1">
+      <div className="min-w-0">
+        <div className="flex items-center gap-2 mb-3 overflow-x-auto pb-1 max-w-full">
           {["All", ...categories].map((c) => (
             <button
               key={c}
               onClick={() => setFilter(c)}
-              className="px-3 py-1.5 text-xs font-semibold rounded-full whitespace-nowrap"
+              className="px-3 py-1.5 text-xs font-semibold rounded-full whitespace-nowrap shrink-0"
               style={{
                 background: filter === c ? COLORS.pitch : COLORS.chalkDim,
                 color: filter === c ? "#fff" : COLORS.ink,
@@ -1168,12 +1172,12 @@ function DrillsTab({ drills, categories, persistDrills, persistCategories, avgRa
             </button>
           ))}
         </div>
-        <div className="grid sm:grid-cols-2 gap-3">
+        <div className="grid sm:grid-cols-2 gap-3 min-w-0">
           {shown.map((d) => (
-            <Card key={d.id} className="p-3.5">
+            <Card key={d.id} className="p-3.5 min-w-0">
               <div className="flex items-start justify-between gap-2">
-                <div>
-                  <div className="text-sm font-bold" style={{ color: COLORS.ink }}>{d.name}</div>
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-bold truncate" style={{ color: COLORS.ink }}>{d.name}</div>
                   <div className="flex gap-1.5 mt-1 flex-wrap">
                     <Pill tone="chalk">{d.category}</Pill>
                     {d.theme && <Pill tone="amber">{d.theme}</Pill>}
@@ -1189,7 +1193,7 @@ function DrillsTab({ drills, categories, persistDrills, persistCategories, avgRa
                 </div>
               </div>
               {d.description && (
-                <p className="text-xs mt-2" style={{ color: COLORS.inkSoft }}>{d.description}</p>
+                <p className="text-xs mt-2 break-words" style={{ color: COLORS.inkSoft }}>{d.description}</p>
               )}
               <div className="flex items-center justify-between mt-3">
                 <span className="text-[11px] font-mono" style={{ color: COLORS.inkSoft, fontFamily: "JetBrains Mono" }}>
@@ -1480,6 +1484,7 @@ function TeamToggles({ teams, selected, onToggle, size = "sm" }) {
   );
 }
 
+{/* ✅ FIX 3 & 4 & 5: Player profile mini symbol badges, Bulk text removal & dynamic team counter */}
 function SquadView({ players, teams, persistPlayers, persistTeams, flash }) {
   const [name, setName] = useState("");
   const [selectedTeams, setSelectedTeams] = useState([SQUAD_TEAM]);
@@ -1584,7 +1589,8 @@ function SquadView({ players, teams, persistPlayers, persistTeams, flash }) {
 
         <Card className="p-4">
           <div style={{ fontFamily: "Bebas Neue", color: COLORS.pitch }} className="text-lg mb-3">BULK ADD</div>
-          <p className="text-xs mb-2" style={{ color: COLORS.inkSoft }}>One name per line — handy for getting all 31 in at once.</p>
+          {/* ✅ FIX 4: Removed "— handy for getting all 31 in at once." */}
+          <p className="text-xs mb-2" style={{ color: COLORS.inkSoft }}>One name per line.</p>
           <textarea
             value={bulk}
             onChange={(e) => setBulk(e.target.value)}
@@ -1619,7 +1625,10 @@ function SquadView({ players, teams, persistPlayers, persistTeams, flash }) {
             );
           })}
         </div>
-        <p className="text-xs mb-2" style={{ color: COLORS.inkSoft }}>{players.length} player{players.length === 1 ? "" : "s"} in the squad</p>
+        {/* ✅ FIX 5: Dynamic player count when filtering */}
+        <p className="text-xs mb-2" style={{ color: COLORS.inkSoft }}>
+          {shown.length} player{shown.length === 1 ? "" : "s"} {teamFilter === "All" ? "in the squad" : `in ${teamFilter}`}
+        </p>
         <div className="space-y-2">
           {shown.map((p) => (
             <Card key={p.id} className="p-3 flex items-center justify-between gap-3 flex-wrap">
@@ -1633,8 +1642,26 @@ function SquadView({ players, teams, persistPlayers, persistTeams, flash }) {
                 </div>
               </div>
               <div className="flex items-center gap-2 flex-wrap">
-                <TeamToggles teams={teams} selected={p.teams} onToggle={(t) => togglePlayerTeam(p.id, t)} />
-                <button onClick={() => removePlayer(p.id)}><Trash2 size={15} color={COLORS.danger} /></button>
+                {/* ✅ FIX 3: Compact symbol-only Team Badges on player card profile view */}
+                <div className="flex flex-wrap gap-1 items-center">
+                  {teams.map((t) => {
+                    const on = p.teams.includes(t);
+                    const color = getTeamColor(t);
+                    return (
+                      <button
+                        key={t}
+                        type="button"
+                        onClick={() => togglePlayerTeam(p.id, t)}
+                        title={t}
+                        className="transition-transform active:scale-95"
+                        style={{ opacity: on ? 1 : 0.25 }}
+                      >
+                        <TeamBadge team={t} size={22} />
+                      </button>
+                    );
+                  })}
+                </div>
+                <button onClick={() => removePlayer(p.id)} className="ml-1"><Trash2 size={15} color={COLORS.danger} /></button>
               </div>
             </Card>
           ))}
@@ -1851,10 +1878,13 @@ function MatchDaysView({ players, teams, formats, matchdays, persistPlayers, per
     <div className="space-y-4">
       <Card className="p-4 sm:p-5">
         <div style={{ fontFamily: "Bebas Neue", color: COLORS.pitch }} className="text-lg mb-3">NEW MATCH DAY</div>
-        <div className="grid sm:grid-cols-2 gap-3 mb-3">
+        <div className="grid sm:grid-cols-2 gap-3 mb-3 items-end">
+          {/* ✅ FIX 1: Compact date input */}
           <div>
             <Label>Date</Label>
-            <TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+            <div className="max-w-[170px]">
+              <TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+            </div>
           </div>
           <div>
             <Label>Filter squad by team</Label>
