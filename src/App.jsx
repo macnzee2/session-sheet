@@ -101,16 +101,29 @@ function generateRotationPlan(presentPlayers, formatPositions, duration, subInte
 function MatchDayCard({ matchday, roster, formats, onUpdateMatchday }) {
   const [numGamesToAdd, setNumGamesToAdd] = useState(1);
   const [selectedFormatId, setSelectedFormatId] = useState(formats[0]?.id || '');
-  const [gameDuration, setGameDuration] = useState(20);
-  const [subInterval, setSubInterval] = useState(5);
+  const [gameDuration, setGameDuration] = useState(10);
+  const [subInterval, setSubInterval] = useState(2);
+  const [isMatchdayCollapsed, setIsMatchdayCollapsed] = useState(false);
+  const [collapsedGames, setCollapsedGames] = useState({});
+
+  const presentPlayers = roster.filter((p) => matchday.attendance?.[p.id] === 'present');
+
+  // Auto-set duration and sub interval based on player count defaults
+  useEffect(() => {
+    if (presentPlayers.length === 5) {
+      setGameDuration(10);
+      setSubInterval(2);
+    } else if (presentPlayers.length === 6) {
+      setGameDuration(10);
+      setSubInterval(3.5);
+    }
+  }, [presentPlayers.length]);
 
   useEffect(() => {
     if (!selectedFormatId && formats.length > 0) {
       setSelectedFormatId(formats[0].id);
     }
   }, [formats, selectedFormatId]);
-
-  const presentPlayers = roster.filter((p) => matchday.attendance?.[p.id] === 'present');
 
   const addGames = () => {
     const fmt = formats.find((f) => f.id === selectedFormatId) || formats[0];
@@ -142,6 +155,7 @@ function MatchDayCard({ matchday, roster, formats, onUpdateMatchday }) {
         positions: fmt.positions,
         duration: Number(gameDuration),
         subInterval: Number(subInterval),
+        played: false,
         intervals: plan.intervals
       });
     }
@@ -150,6 +164,23 @@ function MatchDayCard({ matchday, roster, formats, onUpdateMatchday }) {
       ...matchday,
       games: [...(matchday.games || []), ...newGames]
     });
+  };
+
+  const togglePlayed = (gameId) => {
+    const updatedGames = (matchday.games || []).map((g) => {
+      if (g.id === gameId) {
+        const nextPlayed = !g.played;
+        // Auto-collapse when marked as played
+        setCollapsedGames((prev) => ({ ...prev, [gameId]: nextPlayed }));
+        return { ...g, played: nextPlayed };
+      }
+      return g;
+    });
+    onUpdateMatchday({ ...matchday, games: updatedGames });
+  };
+
+  const toggleGameCollapse = (gameId) => {
+    setCollapsedGames((prev) => ({ ...prev, [gameId]: !prev[gameId] }));
   };
 
   const regenerateGame = (gameId) => {
@@ -186,112 +217,149 @@ function MatchDayCard({ matchday, roster, formats, onUpdateMatchday }) {
 
   return (
     <div style={{ border: '1px solid #ccc', padding: '16px', borderRadius: '8px', marginBottom: '20px', backgroundColor: '#fff' }}>
-      <h2>Matchday: {matchday.date}</h2>
-
-      {/* Attendance Tracker */}
-      <div style={{ marginBottom: '16px' }}>
-        <h3>Attendance</h3>
-        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-          {roster.map((player) => {
-            const isPresent = matchday.attendance?.[player.id] === 'present';
-            return (
-              <button
-                key={player.id}
-                onClick={() => toggleAttendance(player.id)}
-                style={{
-                  padding: '6px 12px',
-                  backgroundColor: isPresent ? '#4CAF50' : '#f44336',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '4px',
-                  cursor: 'pointer'
-                }}
-              >
-                {player.name} ({isPresent ? 'Present' : 'Absent'})
-              </button>
-            );
-          })}
-        </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h2>Matchday: {matchday.date}</h2>
+        <button 
+          onClick={() => setIsMatchdayCollapsed(!isMatchdayCollapsed)}
+          style={{ padding: '4px 12px', fontSize: '0.85em', cursor: 'pointer', background: '#e0e0e0', border: 'none', borderRadius: '4px' }}
+        >
+          {isMatchdayCollapsed ? 'Expand Matchday' : 'Collapse Matchday'}
+        </button>
       </div>
 
-      {/* Game Generation Controls */}
-      <div style={{ borderTop: '1px solid #eee', paddingTop: '16px', marginBottom: '16px' }}>
-        <h3>Add Games</h3>
-        <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
-          <label>
-            Format:
-            <select value={selectedFormatId} onChange={(e) => setSelectedFormatId(e.target.value)}>
-              {formats.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {f.positions.length}v{f.positions.length} ({f.name})
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label>
-            Duration (mins):
-            <input
-              type="number"
-              value={gameDuration}
-              onChange={(e) => setGameDuration(e.target.value)}
-              style={{ width: '60px' }}
-            />
-          </label>
-
-          <label>
-            Sub Interval (mins):
-            <input
-              type="number"
-              value={subInterval}
-              onChange={(e) => setSubInterval(e.target.value)}
-              style={{ width: '60px' }}
-            />
-          </label>
-
-          <label>
-            Number of Games:
-            <input
-              type="number"
-              value={numGamesToAdd}
-              onChange={(e) => setNumGamesToAdd(e.target.value)}
-              style={{ width: '60px' }}
-            />
-          </label>
-
-          <button onClick={addGames} style={{ padding: '6px 16px', cursor: 'pointer' }}>Generate Games</button>
-        </div>
-      </div>
-
-      {/* Matchday Schedule Display */}
-      <div>
-        <h3>Schedule ({(matchday.games || []).length} Games)</h3>
-        {(matchday.games || []).map((game, gIdx) => (
-          <div key={game.id} style={{ backgroundColor: '#f9f9f9', padding: '12px', marginBottom: '12px', borderRadius: '4px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <h4>Game {gIdx + 1} ({game.formatName || `${game.positions?.length}v${game.positions?.length}`} - {game.duration} mins)</h4>
-              <button onClick={() => regenerateGame(game.id)}>Reshuffle Game</button>
+      {!isMatchdayCollapsed && (
+        <>
+          {/* Attendance Tracker */}
+          <div style={{ marginBottom: '16px', marginTop: '12px' }}>
+            <h3>Attendance</h3>
+            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
+              {roster.map((player) => {
+                const isPresent = matchday.attendance?.[player.id] === 'present';
+                return (
+                  <button
+                    key={player.id}
+                    onClick={() => toggleAttendance(player.id)}
+                    style={{
+                      padding: isPresent ? '2px 8px' : '4px 8px',
+                      fontSize: isPresent ? '0.75em' : '0.85em',
+                      backgroundColor: isPresent ? '#4CAF50' : '#f0f0f0',
+                      color: isPresent ? 'white' : '#666',
+                      border: isPresent ? 'none' : '1px solid #ccc',
+                      borderRadius: '12px',
+                      cursor: 'pointer',
+                      fontWeight: isPresent ? 'bold' : 'normal'
+                    }}
+                  >
+                    {player.name}
+                  </button>
+                );
+              })}
             </div>
-
-            {game.intervals.map((iv) => (
-              <div key={iv.index} style={{ marginTop: '8px', paddingLeft: '8px', borderLeft: '2px solid #007bff' }}>
-                <strong>{iv.startMin}' - {iv.endMin}'</strong>
-                <ul>
-                  {iv.onField.map((of) => {
-                    const p = roster.find((r) => r.id === of.playerId);
-                    return <li key={of.playerId}>{p?.name || of.playerId}: <strong>{of.position}</strong></li>;
-                  })}
-                </ul>
-                {iv.benched.length > 0 && (
-                  <p style={{ color: '#666', fontSize: '0.9em' }}>
-                    Bench: {iv.benched.map((bId) => roster.find((r) => r.id === bId)?.name || bId).join(', ')}
-                  </p>
-                )}
-              </div>
-            ))}
           </div>
-        ))}
-      </div>
+
+          {/* Game Generation Controls */}
+          <div style={{ borderTop: '1px solid #eee', paddingTop: '16px', marginBottom: '16px' }}>
+            <h3>Add Games</h3>
+            <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
+              <label>
+                Format:
+                <select value={selectedFormatId} onChange={(e) => setSelectedFormatId(e.target.value)}>
+                  {formats.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.positions.length}v{f.positions.length} ({f.name})
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label>
+                Duration (mins):
+                <input
+                  type="number"
+                  value={gameDuration}
+                  onChange={(e) => setGameDuration(e.target.value)}
+                  style={{ width: '60px' }}
+                />
+              </label>
+
+              <label>
+                Sub Interval (mins):
+                <input
+                  type="number"
+                  step="0.5"
+                  value={subInterval}
+                  onChange={(e) => setSubInterval(e.target.value)}
+                  style={{ width: '60px' }}
+                />
+              </label>
+
+              <label>
+                Number of Games:
+                <input
+                  type="number"
+                  value={numGamesToAdd}
+                  onChange={(e) => setNumGamesToAdd(e.target.value)}
+                  style={{ width: '60px' }}
+                />
+              </label>
+
+              <button onClick={addGames} style={{ padding: '6px 16px', cursor: 'pointer' }}>Generate Games</button>
+            </div>
+          </div>
+
+          {/* Matchday Schedule Display */}
+          <div>
+            <h3>Schedule ({(matchday.games || []).length} Games)</h3>
+            {(matchday.games || []).map((game, gIdx) => {
+              const isCollapsed = collapsedGames[game.id];
+              return (
+                <div key={game.id} style={{ backgroundColor: game.played ? '#e8f5e9' : '#f9f9f9', padding: '12px', marginBottom: '12px', borderRadius: '4px', borderLeft: game.played ? '4px solid #4CAF50' : 'none' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <input 
+                        type="checkbox" 
+                        checked={!!game.played} 
+                        onChange={() => togglePlayed(game.id)} 
+                        id={`played_${game.id}`}
+                      />
+                      <label htmlFor={`played_${game.id}`} style={{ fontWeight: 'bold', textDecoration: game.played ? 'line-through' : 'none', cursor: 'pointer' }}>
+                        Game {gIdx + 1} ({game.formatName || `${game.positions?.length}v${game.positions?.length}`} - {game.duration} mins)
+                      </label>
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button onClick={() => toggleGameCollapse(game.id)} style={{ fontSize: '0.8em', cursor: 'pointer' }}>
+                        {isCollapsed ? 'Expand' : 'Collapse'}
+                      </button>
+                      <button onClick={() => regenerateGame(game.id)} style={{ fontSize: '0.8em', cursor: 'pointer' }}>Reshuffle Game</button>
+                    </div>
+                  </div>
+
+                  {!isCollapsed && (
+                    <div style={{ marginTop: '8px' }}>
+                      {game.intervals.map((iv) => (
+                        <div key={iv.index} style={{ marginTop: '8px', paddingLeft: '8px', borderLeft: '2px solid #007bff' }}>
+                          <strong>{iv.startMin}' - {iv.endMin}'</strong>
+                          <ul>
+                            {iv.onField.map((of) => {
+                              const p = roster.find((r) => r.id === of.playerId);
+                              return <li key={of.playerId}>{p?.name || of.playerId}: <strong>{of.position}</strong></li>;
+                            })}
+                          </ul>
+                          {iv.benched.length > 0 && (
+                            <p style={{ color: '#666', fontSize: '0.9em' }}>
+                              Bench: {iv.benched.map((bId) => roster.find((r) => r.id === bId)?.name || bId).join(', ')}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
     </div>
   );
 }
