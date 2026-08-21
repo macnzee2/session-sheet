@@ -8,6 +8,294 @@ import { supabase } from "./supabaseClient";
 
 const FONT_IMPORT = `@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap');`;
 
+// FAIR POSITION ROTATION (SINGLE-DAY MATCHDAY SCOPE)
+function generateRotationPlan(presentPlayers, formatPositions, duration, subInterval, existingMatchdayGames = []) {
+  const requiredPositions = formatPositions || []; 
+  const P = requiredPositions.length;
+  const N = presentPlayers.length;
+  if (N < P || P === 0) return null; // Need at least enough players to fill the pitch
+  
+  const g = N - P;
+  const numIntervals = g === 0 ? 1 : Math.max(1, Math.ceil(duration / subInterval));
+  
+  // 1. Build a local position tracker purely from TODAY'S games generated so far
+  const todayPositionCounts = {};
+  presentPlayers.forEach((p) => {
+    todayPositionCounts[p.id] = {};
+  });
+
+  // Tally positions played earlier TODAY (ignoring past weeks)
+  existingMatchdayGames.forEach((game) => {
+    game.intervals?.forEach((iv) => {
+      iv.onField?.forEach((of) => {
+        if (todayPositionCounts[of.playerId]) {
+          const pos = of.position;
+          todayPositionCounts[of.playerId][pos] = (todayPositionCounts[of.playerId][pos] || 0) + 1;
+        }
+      });
+    });
+  });
+
+  const intervals = [];
+
+  // 2. Generate intervals for the CURRENT game
+  for (let i = 0; i < numIntervals; i++) {
+    const startMin = i === 0 ? 0 : Math.round(i * subInterval * 10) / 10;
+    const endMin = Math.round(Math.min(duration, (i + 1) * subInterval) * 10) / 10;
+    
+    // Select bench players sequentially for this game
+    const benchedIdxs = new Set();
+    if (g > 0) {
+      const startIndex = (i * g) % N;
+      for (let k = 0; k < g; k++) benchedIdxs.add((startIndex + k) % N);
+    }
+
+    const benched = [];
+    const activePlayers = [];
+
+    presentPlayers.forEach((p, idx) => {
+      if (benchedIdxs.has(idx)) {
+        benched.push(p.id);
+      } else {
+        activePlayers.push(p);
+      }
+    });
+
+    // 3. Assign positions prioritizing positions the player has played LEAST TODAY
+    const onField = [];
+    const availablePositions = [...requiredPositions];
+
+    activePlayers.forEach((player) => {
+      // Respect fixed manual overrides if specified (e.g., dedicated GK)
+      if (player.preferredPosition && availablePositions.includes(player.preferredPosition)) {
+        const posIndex = availablePositions.indexOf(player.preferredPosition);
+        const assignedPos = availablePositions.splice(posIndex, 1)[0];
+        
+        todayPositionCounts[player.id][assignedPos] = (todayPositionCounts[player.id][assignedPos] || 0) + 1;
+        onField.push({ playerId: player.id, position: assignedPos });
+        return;
+      }
+
+      // Otherwise, sort available positions by what this player has done LEAST today
+      availablePositions.sort((a, b) => {
+        const countA = todayPositionCounts[player.id][a] || 0;
+        const countB = todayPositionCounts[player.id][b] || 0;
+        return countA - countB;
+      });
+
+      const assignedPos = availablePositions.shift();
+      
+      // Update local count for the next interval calculation
+      todayPositionCounts[player.id][assignedPos] = (todayPositionCounts[player.id][assignedPos] || 0) + 1;
+
+      onField.push({ playerId: player.id, position: assignedPos });
+    });
+
+    intervals.push({ index: i, startMin, endMin, onField, benched });
+  }
+
+  return { intervals };
+}
+
+// --- MATCHDAY CARD COMPONENT ---
+function MatchDayCard({ matchday, roster, formats, onUpdateMatchday }) {
+  const [numGamesToAdd, setNumGamesToAdd] = useState(1);
+  const [selectedFormatId, setSelectedFormatId] = useState(formats[0]?.id || '');
+  const [gameDuration, setGameDuration] = useState(20);
+  const [subInterval, setSubInterval] = useState(5);
+
+  useEffect(() => {
+    if (!selectedFormatId && formats.length > 0) {
+      setSelectedFormatId(formats[0].id);
+    }
+  }, [formats, selectedFormatId]);
+
+  const presentPlayers = roster.filter((p) => matchday.attendance?.[p.id] === 'present');
+
+  const addGames = () => {
+    const fmt = formats.find((f) => f.id === selectedFormatId) || formats[0];
+    if (!fmt) {
+      alert("Please define at least one format under Match Day > Formats.");
+      return;
+    }
+
+    const newGames = [];
+
+    for (let i = 0; i < numGamesToAdd; i++) {
+      const plan = generateRotationPlan(
+        presentPlayers,
+        fmt.positions,
+        Number(gameDuration),
+        Number(subInterval),
+        [...(matchday.games || []), ...newGames]
+      );
+
+      if (!plan) {
+        alert(`Need at least ${fmt.positions.length} present players for ${fmt.name} (${fmt.positions.length}v${fmt.positions.length}).`);
+        return;
+      }
+
+      newGames.push({
+        id: `g_${Date.now()}_${i}`,
+        formatId: fmt.id,
+        formatName: fmt.name,
+        positions: fmt.positions,
+        duration: Number(gameDuration),
+        subInterval: Number(subInterval),
+        intervals: plan.intervals
+      });
+    }
+
+    onUpdateMatchday({
+      ...matchday,
+      games: [...(matchday.games || []), ...newGames]
+    });
+  };
+
+  const regenerateGame = (gameId) => {
+    const game = matchday.games.find((g) => g.id === gameId);
+    if (!game) return;
+
+    const fmt = formats.find((f) => f.id === game.formatId) || { positions: game.positions };
+    const plan = generateRotationPlan(
+      presentPlayers,
+      fmt.positions || game.positions,
+      game.duration,
+      game.subInterval,
+      matchday.games.filter((g) => g.id !== gameId)
+    );
+
+    if (!plan) return;
+
+    const updatedGames = matchday.games.map((g) => (g.id === gameId ? { ...g, intervals: plan.intervals } : g));
+    onUpdateMatchday({ ...matchday, games: updatedGames });
+  };
+
+  const toggleAttendance = (playerId) => {
+    const currentStatus = matchday.attendance?.[playerId] || 'absent';
+    const nextStatus = currentStatus === 'present' ? 'absent' : 'present';
+
+    onUpdateMatchday({
+      ...matchday,
+      attendance: {
+        ...matchday.attendance,
+        [playerId]: nextStatus
+      }
+    });
+  };
+
+  return (
+    <div style={{ border: '1px solid #ccc', padding: '16px', borderRadius: '8px', marginBottom: '20px', backgroundColor: '#fff' }}>
+      <h2>Matchday: {matchday.date}</h2>
+
+      {/* Attendance Tracker */}
+      <div style={{ marginBottom: '16px' }}>
+        <h3>Attendance</h3>
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+          {roster.map((player) => {
+            const isPresent = matchday.attendance?.[player.id] === 'present';
+            return (
+              <button
+                key={player.id}
+                onClick={() => toggleAttendance(player.id)}
+                style={{
+                  padding: '6px 12px',
+                  backgroundColor: isPresent ? '#4CAF50' : '#f44336',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer'
+                }}
+              >
+                {player.name} ({isPresent ? 'Present' : 'Absent'})
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Game Generation Controls */}
+      <div style={{ borderTop: '1px solid #eee', paddingTop: '16px', marginBottom: '16px' }}>
+        <h3>Add Games</h3>
+        <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
+          <label>
+            Format:
+            <select value={selectedFormatId} onChange={(e) => setSelectedFormatId(e.target.value)}>
+              {formats.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.positions.length}v{f.positions.length} ({f.name})
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label>
+            Duration (mins):
+            <input
+              type="number"
+              value={gameDuration}
+              onChange={(e) => setGameDuration(e.target.value)}
+              style={{ width: '60px' }}
+            />
+          </label>
+
+          <label>
+            Sub Interval (mins):
+            <input
+              type="number"
+              value={subInterval}
+              onChange={(e) => setSubInterval(e.target.value)}
+              style={{ width: '60px' }}
+            />
+          </label>
+
+          <label>
+            Number of Games:
+            <input
+              type="number"
+              value={numGamesToAdd}
+              onChange={(e) => setNumGamesToAdd(e.target.value)}
+              style={{ width: '60px' }}
+            />
+          </label>
+
+          <button onClick={addGames} style={{ padding: '6px 16px', cursor: 'pointer' }}>Generate Games</button>
+        </div>
+      </div>
+
+      {/* Matchday Schedule Display */}
+      <div>
+        <h3>Schedule ({(matchday.games || []).length} Games)</h3>
+        {(matchday.games || []).map((game, gIdx) => (
+          <div key={game.id} style={{ backgroundColor: '#f9f9f9', padding: '12px', marginBottom: '12px', borderRadius: '4px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h4>Game {gIdx + 1} ({game.formatName || `${game.positions?.length}v${game.positions?.length}`} - {game.duration} mins)</h4>
+              <button onClick={() => regenerateGame(game.id)}>Reshuffle Game</button>
+            </div>
+
+            {game.intervals.map((iv) => (
+              <div key={iv.index} style={{ marginTop: '8px', paddingLeft: '8px', borderLeft: '2px solid #007bff' }}>
+                <strong>{iv.startMin}' - {iv.endMin}'</strong>
+                <ul>
+                  {iv.onField.map((of) => {
+                    const p = roster.find((r) => r.id === of.playerId);
+                    return <li key={of.playerId}>{p?.name || of.playerId}: <strong>{of.position}</strong></li>;
+                  })}
+                </ul>
+                {iv.benched.length > 0 && (
+                  <p style={{ color: '#666', fontSize: '0.9em' }}>
+                    Bench: {iv.benched.map((bId) => roster.find((r) => r.id === bId)?.name || bId).join(', ')}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 const BASE_THEMES = [
   {
     id: "pitch",
@@ -163,7 +451,8 @@ function hexToRgba(hex, alpha) {
 }
 
 const DEFAULT_FORMATS = [
-  { positions: ["DEF", "LM", "RM", "ST"] },
+  { positions: ["GK", "DEF", "MID", "ST"] },
+  { positions: ["GK", "LB", "RB", "CM", "LM", "RM", "ST"] }
 ];
 
 const DEFAULT_TEAMS = [SQUAD_TEAM];
@@ -1643,60 +1932,6 @@ function MethodsTab({ methods, categories, persistMethods, flash, COLORS }) {
   );
 }
 
-function suggestSubInterval(n, p) {
-  const g = n - p;
-  if (g <= 0) return 10;
-  if (g === 1) return 2;
-  if (g === 2) return 3.5;
-  return Math.max(1, Math.round((10 / Math.max(1, Math.round(n / g))) * 2) / 2);
-}
-
-// ENFORCED FORMATION ROTATION ALGORITHM
-function generateRotationPlan(presentPlayers, format, duration, subInterval) {
-  const requiredPositions = format.positions; 
-  const P = requiredPositions.length;
-  const N = presentPlayers.length;
-  if (N < P) return null;
-  
-  const g = N - P;
-  const numIntervals = g === 0 ? 1 : Math.max(1, Math.ceil(duration / subInterval));
-  const pointers = {};
-  presentPlayers.forEach((p) => { pointers[p.id] = p.rotationPointer || 0; });
-  const intervals = [];
-
-  for (let i = 0; i < numIntervals; i++) {
-    const startMin = i === 0 ? 0 : Math.round(i * subInterval * 10) / 10;
-    const endMin = Math.round(Math.min(duration, (i + 1) * subInterval) * 10) / 10;
-    
-    const benchedIdxs = new Set();
-    if (g > 0) {
-      const startIndex = (i * g) % N;
-      for (let k = 0; k < g; k++) benchedIdxs.add((startIndex + k) % N);
-    }
-
-    const benched = [];
-    const activePlayers = [];
-
-    presentPlayers.forEach((p, idx) => {
-      if (benchedIdxs.has(idx)) {
-        benched.push(p.id);
-      } else {
-        activePlayers.push(p);
-      }
-    });
-
-    const onField = activePlayers.map((p, slotIndex) => {
-      const pos = requiredPositions[slotIndex];
-      pointers[p.id] += 1;
-      return { playerId: p.id, position: pos };
-    });
-
-    intervals.push({ index: i, startMin, endMin, onField, benched });
-  }
-
-  return { intervals, finalPointers: pointers };
-}
-
 function MatchDayTab({ players, teams, formats, matchdays, persistPlayers, persistTeams, persistFormats, persistMatchdays, flash, COLORS }) {
   const [sub, setSub] = useState("matchdays");
   const subTabs = [
@@ -1762,9 +1997,9 @@ function TeamBadge({ team, size = 18 }) {
         fontWeight: 800,
         fontSize: size * 0.52,
         display: "inline-flex",
-        alignItems: "center",      /* Fixed: Ensures vertical alignment */
+        alignItems: "center",
         justifyContent: "center",
-        lineHeight: 0,             /* Fixed: Prevents text baseline offset */
+        lineHeight: 0,
         flexShrink: 0,
       }}
     >
@@ -2150,7 +2385,6 @@ function MatchDaysView({ players, teams, formats, matchdays, persistPlayers, per
   const [date, setDate] = useState(todayStr());
   const [teamFilter, setTeamFilter] = useState("All");
   const [selectedIds, setSelectedIds] = useState([]);
-  const [expanded, setExpanded] = useState(null);
 
   const eligible = teamFilter === "All" ? players : players.filter((p) => p.teams.includes(teamFilter));
 
@@ -2159,11 +2393,17 @@ function MatchDaysView({ players, teams, formats, matchdays, persistPlayers, per
 
   const createMatchDay = async () => {
     if (!selectedIds.length) return flash("Select who's present today");
-    const md = { id: uid(), date, teamFilter, presentPlayerIds: selectedIds, games: [] };
+    
+    // Construct initial attendance map from selection
+    const attendanceMap = {};
+    selectedIds.forEach((id) => {
+      attendanceMap[id] = 'present';
+    });
+
+    const md = { id: uid(), date, teamFilter, presentPlayerIds: selectedIds, attendance: attendanceMap, games: [] };
     await persistMatchdays([md, ...matchdays]);
     setSelectedIds([]);
-    setExpanded(md.id);
-    flash("Match day created — now add your games below");
+    flash("Match day created — generate your rotation plan below");
   };
 
   const deleteMatchDay = async (id) => {
@@ -2171,443 +2411,192 @@ function MatchDaysView({ players, teams, formats, matchdays, persistPlayers, per
     flash("Match day deleted");
   };
 
-  if (!formats.length) {
-    return (
-      <Card className="p-8 text-center">
-        <p className="text-sm" style={{ color: COLORS.inkSoft }}>Add a game format (e.g. 4v4) in the Formats tab before setting up a match day.</p>
-      </Card>
-    );
-  }
+  const handleUpdateMatchday = async (updatedMatchday) => {
+    const updated = matchdays.map((md) => (md.id === updatedMatchday.id ? updatedMatchday : md));
+    await persistMatchdays(updated);
+  };
+
   if (!players.length) {
     return (
       <Card className="p-8 text-center">
-        <p className="text-sm" style={{ color: COLORS.inkSoft }}>Add your squad in the Squad tab before setting up a match day.</p>
+        <p className="text-sm" style={{ color: COLORS.inkSoft }}>Add your squad in the Squad tab before setting up a Match Day.</p>
       </Card>
     );
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       <Card className="p-4 sm:p-5">
-        <div style={{ fontFamily: "Bebas Neue", color: COLORS.pitch }} className="text-lg mb-3">NEW MATCH DAY</div>
-        <div className="grid sm:grid-cols-2 gap-3 mb-3 items-end">
+        <div style={{ fontFamily: "Bebas Neue", color: COLORS.pitch }} className="text-xl mb-3">CREATE NEW MATCHDAY</div>
+        <div className="grid sm:grid-cols-2 gap-3 mb-4">
           <div>
             <Label COLORS={COLORS}>Date</Label>
-            <div className="max-w-[170px]">
-              <TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} COLORS={COLORS} />
-            </div>
+            <TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} COLORS={COLORS} />
           </div>
           <div>
-            <Label COLORS={COLORS}>Filter squad by team</Label>
-            <div className="flex flex-wrap gap-1.5">
-              {["All", ...teams].map((t) => {
-                const on = teamFilter === t;
-                const color = t === "All" ? COLORS.pitch : getTeamColor(t);
-                return (
-                  <button
-                    key={t}
-                    onClick={() => { setTeamFilter(t); setSelectedIds([]); }}
-                    className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-full whitespace-nowrap"
-                    style={{ background: on ? color : hexToRgba(color, 0.12), color: on ? "#fff" : COLORS.ink }}
-                  >
-                    {t !== "All" && <TeamBadge team={t} size={14} />}
-                    {t}
-                  </button>
-                );
-              })}
-            </div>
+            <Label COLORS={COLORS}>Filter Squad Group</Label>
+            <Select
+              value={teamFilter}
+              onChange={(v) => { setTeamFilter(v); setSelectedIds([]); }}
+              options={["All", ...teams].map((t) => ({ value: t, label: t }))}
+              COLORS={COLORS}
+            />
           </div>
         </div>
-        <Label COLORS={COLORS}>Who's here today? ({selectedIds.length} selected)</Label>
-        <div className="flex flex-wrap gap-1.5 mb-3 max-h-52 overflow-y-auto p-1">
+
+        <Label COLORS={COLORS}>Select Present Players ({selectedIds.length})</Label>
+        <div className="flex flex-wrap gap-2 mb-4">
           {eligible.map((p) => {
-            const on = selectedIds.includes(p.id);
+            const isSelected = selectedIds.includes(p.id);
             return (
               <button
                 key={p.id}
                 onClick={() => toggleSelect(p.id)}
-                className="flex items-center gap-1.5 pl-1 pr-2.5 py-1.5 text-xs font-semibold rounded-full"
-                style={{ background: on ? COLORS.amber : COLORS.chalkDim, color: COLORS.ink }}
+                className="px-3 py-1.5 text-xs font-semibold rounded-full border transition-all"
+                style={{
+                  background: isSelected ? COLORS.pitch : COLORS.chalkDim,
+                  color: isSelected ? "#fff" : COLORS.ink,
+                  borderColor: isSelected ? COLORS.pitch : "#D9D3C1"
+                }}
               >
-                <TeamBadge team={p.teams[0]} size={15} />
-                {p.name}
+                {p.name} {isSelected && "✓"}
               </button>
             );
           })}
         </div>
-        <Button variant="primary" icon={Plus} onClick={createMatchDay} COLORS={COLORS}>Create match day</Button>
+
+        <Button variant="primary" icon={Plus} onClick={createMatchDay} COLORS={COLORS}>
+          Create Matchday
+        </Button>
       </Card>
 
-      {[...matchdays].sort((a, b) => b.date.localeCompare(a.date)).map((md) => (
-        <MatchDayCard
-          key={md.id}
-          matchday={md}
-          players={players}
-          formats={formats}
-          matchdays={matchdays}
-          persistMatchdays={persistMatchdays}
-          persistPlayers={persistPlayers}
-          isOpen={expanded === md.id}
-          onToggle={() => setExpanded(expanded === md.id ? null : md.id)}
-          onDelete={() => deleteMatchDay(md.id)}
-          flash={flash}
-          COLORS={COLORS}
-        />
-      ))}
+      {/* Matchday Cards Display */}
+      <div>
+        {matchdays.map((md) => (
+          <div key={md.id} className="relative">
+            <div className="absolute right-4 top-4 z-10">
+              <button
+                onClick={() => deleteMatchDay(md.id)}
+                className="p-1 text-red-600 hover:bg-red-50 rounded"
+                title="Delete Matchday"
+              >
+                <Trash2 size={16} />
+              </button>
+            </div>
+            <MatchDayCard
+              matchday={md}
+              roster={players}
+              formats={formats}
+              onUpdateMatchday={handleUpdateMatchday}
+            />
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
 
-function MatchDayCard({ matchday, players, formats, matchdays, persistMatchdays, persistPlayers, isOpen, onToggle, onDelete, flash, COLORS }) {
-  const presentPlayers = matchday.presentPlayerIds.map((id) => players.find((p) => p.id === id)).filter(Boolean);
-  const [formatId, setFormatId] = useState(formats[0]?.id || "");
-  const [opponent, setOpponent] = useState("");
-  const [duration, setDuration] = useState(10);
-  const [numGamesToGenerate, setNumGamesToGenerate] = useState(1);
-  const format = formats.find((f) => f.id === formatId) || formats[0];
-  const suggested = format ? suggestSubInterval(presentPlayers.length, format.positions.length) : 2;
-  const [subInterval, setSubInterval] = useState(suggested);
-
-  useEffect(() => {
-    if (format) setSubInterval(suggestSubInterval(presentPlayers.length, format.positions.length));
-  }, [formatId]);
-
-  const updateMatchday = async (patch) => {
-    await persistMatchdays(matchdays.map((m) => (m.id === matchday.id ? { ...m, ...patch } : m)));
-  };
-
-  const addGames = async () => {
-    if (!format) return flash("Add a format first");
-    const count = Math.max(1, parseInt(numGamesToGenerate, 10) || 1);
-    const newGames = [];
-
-    for (let i = 0; i < count; i++) {
-      const plan = generateRotationPlan(presentPlayers, format, Number(duration), Number(subInterval));
-      if (!plan) return flash(`Need at least ${format.positions.length} players present for ${format.name}`);
-
-      newGames.push({
-        id: uid(),
-        formatId: format.id,
-        formatName: format.name,
-        formatGroup: `${format.positions.length}v${format.positions.length}`,
-        opponent: opponent.trim() ? (count > 1 ? `${opponent.trim()} (${i + 1})` : opponent.trim()) : "",
-        duration: Number(duration),
-        subInterval: Number(subInterval),
-        intervals: plan.intervals,
-        finalPointers: plan.finalPointers,
-        status: "planned",
-      });
-    }
-
-    await updateMatchday({ games: [...matchday.games, ...newGames] });
-    setOpponent("");
-    flash(`Added ${count} game${count > 1 ? "s" : ""} with strict formation plan`);
-  };
-
-  const regenerateGame = async (game) => {
-    const fmt = formats.find((f) => f.id === game.formatId);
-    if (!fmt) return;
-    const plan = generateRotationPlan(presentPlayers, fmt, game.duration, game.subInterval);
-    if (!plan) return flash("Not enough players present for that format");
-    await updateMatchday({
-      games: matchday.games.map((g) => (g.id === game.id ? { ...g, intervals: plan.intervals, finalPointers: plan.finalPointers } : g)),
-    });
-    flash("Rotation reshuffled");
-  };
-
-  const deleteGame = async (id) => {
-    await updateMatchday({ games: matchday.games.filter((g) => g.id !== id) });
-  };
-
-  const markPlayed = async (game) => {
-    const nextPlayers = players.map((p) => {
-      if (!(p.id in game.finalPointers)) return p;
-      const posCounts = { ...(p.positionCounts || {}) };
-      game.intervals.forEach((iv) => {
-        iv.onField.forEach((of) => {
-          if (of.playerId === p.id) posCounts[of.position] = (posCounts[of.position] || 0) + 1;
-        });
-      });
-      return {
-        ...p,
-        rotationPointer: game.finalPointers[p.id],
-        positionCounts: posCounts,
-        gamesPlayed: (p.gamesPlayed || 0) + 1,
-      };
-    });
-    await persistPlayers(nextPlayers);
-    await updateMatchday({ games: matchday.games.map((g) => (g.id === game.id ? { ...g, status: "played" } : g)) });
-    flash("Game logged — player stats updated");
-  };
-
-  const nameFor = (id) => players.find((p) => p.id === id)?.name || "?";
-
-  return (
-    <Card className="overflow-hidden">
-      <button onClick={onToggle} className="w-full flex items-center justify-between p-4 text-left">
-        <div className="flex items-center gap-3">
-          {isOpen ? <ChevronDown size={16} color={COLORS.inkSoft} /> : <ChevronRight size={16} color={COLORS.inkSoft} />}
-          <div>
-            <div className="text-sm font-bold" style={{ color: COLORS.ink, fontFamily: "Inter" }}>{matchday.date}</div>
-            <div className="text-xs flex items-center gap-1.5" style={{ color: COLORS.inkSoft }}>
-              {presentPlayers.length} present
-              {matchday.teamFilter !== "All" && (
-                <span className="inline-flex items-center gap-1">
-                  · <TeamBadge team={matchday.teamFilter} size={14} /> {matchday.teamFilter}
-                </span>
-              )}
-              · {matchday.games.length} game{matchday.games.length === 1 ? "" : "s"}
-            </div>
-          </div>
-        </div>
-      </button>
-      {isOpen && (
-        <div className="px-4 pb-4">
-          <div className="flex flex-wrap gap-1.5 mb-4">
-            {presentPlayers.map((p) => <Pill key={p.id} tone="chalk" COLORS={COLORS}>{p.name}</Pill>)}
-          </div>
-
-          <div className="rounded-lg border p-3 mb-4" style={{ borderColor: "#E4DFD0" }}>
-            <div className="text-xs font-bold uppercase tracking-wide mb-2" style={{ color: COLORS.inkSoft }}>Add games</div>
-            <div className="grid sm:grid-cols-2 gap-2 mb-2">
-              <Select value={formatId} onChange={setFormatId} options={formats.map((f) => ({ value: f.id, label: `${f.positions.length}v${f.positions.length} · ${f.name}` }))} COLORS={COLORS} />
-              <TextInput placeholder="Opponent (optional)" value={opponent} onChange={(e) => setOpponent(e.target.value)} COLORS={COLORS} />
-            </div>
-            <div className="grid grid-cols-2 gap-2 mb-3">
-              <div>
-                <Label COLORS={COLORS}>Duration (min)</Label>
-                <TextInput type="number" min="1" value={duration} onChange={(e) => setDuration(e.target.value)} COLORS={COLORS} />
-              </div>
-              <div>
-                <Label COLORS={COLORS}>Sub every (min)</Label>
-                <TextInput type="number" min="0.5" step="0.5" value={subInterval} onChange={(e) => setSubInterval(e.target.value)} COLORS={COLORS} />
-              </div>
-            </div>
-            
-            <div className="flex items-end gap-2 pt-1">
-              <div className="w-28">
-                <Label COLORS={COLORS}>Games to add</Label>
-                <TextInput
-                  type="number"
-                  min="1"
-                  max="10"
-                  value={numGamesToGenerate}
-                  onChange={(e) => setNumGamesToGenerate(e.target.value)}
-                  COLORS={COLORS}
-                />
-              </div>
-              <Button variant="primary" icon={Shuffle} onClick={addGames} COLORS={COLORS}>
-                Generate Games
-              </Button>
-            </div>
-          </div>
-
-          <div className="space-y-3">
-            {matchday.games.map((g) => (
-              <div key={g.id} className="rounded-lg border p-3" style={{ borderColor: "#E4DFD0" }}>
-                <div className="flex items-center justify-between mb-2">
-                  <div>
-                    <span className="text-sm font-bold" style={{ color: COLORS.ink }}>{g.formatGroup ? `${g.formatGroup} · ` : ""}{g.formatName}</span>
-                    {g.opponent && <span className="text-xs ml-2" style={{ color: COLORS.inkSoft }}>vs {g.opponent}</span>}
-                    <span className="text-xs ml-2" style={{ color: COLORS.inkSoft }}>· {g.duration} min</span>
-                  </div>
-                  {g.status === "played" ? <Pill tone="pitch" COLORS={COLORS}>Played</Pill> : <Pill tone="amber" COLORS={COLORS}>Planned</Pill>}
-                </div>
-                <div className="space-y-1.5 mb-2">
-                  {g.intervals.map((iv) => (
-                    <div key={iv.index} className="text-xs rounded-md px-2 py-1.5" style={{ background: COLORS.chalkDim }}>
-                      <span className="font-mono font-semibold" style={{ color: COLORS.inkSoft, fontFamily: "JetBrains Mono" }}>
-                        {iv.startMin}–{iv.endMin}m
-                      </span>
-                      <span className="ml-2" style={{ color: COLORS.ink }}>
-                        {iv.onField.map((of) => `${nameFor(of.playerId)} (${of.position})`).join(", ")}
-                      </span>
-                      {iv.benched.length > 0 && (
-                        <span className="ml-2 italic" style={{ color: COLORS.inkSoft }}>
-                          — bench: {iv.benched.map(nameFor).join(", ")}
-                        </span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  {g.status !== "played" && (
-                    <>
-                      <Button variant="dark" size="sm" icon={CheckCircle2} onClick={() => markPlayed(g)} COLORS={COLORS}>Mark played</Button>
-                      <Button variant="ghost" size="sm" icon={Repeat} onClick={() => regenerateGame(g)} COLORS={COLORS}>Reshuffle</Button>
-                    </>
-                  )}
-                  <Button variant="danger" size="sm" icon={Trash2} onClick={() => deleteGame(g.id)} COLORS={COLORS}>Delete</Button>
-                </div>
-              </div>
-            ))}
-            {matchday.games.length === 0 && (
-              <p className="text-xs text-center py-3" style={{ color: COLORS.inkSoft }}>No games added to this match day yet.</p>
-            )}
-          </div>
-
-          <div className="mt-3">
-            <Button variant="danger" size="sm" icon={Trash2} onClick={onDelete} COLORS={COLORS}>Delete match day</Button>
-          </div>
-        </div>
-      )}
-    </Card>
-  );
-}
-
-// Dedicated Modal for Custom UI Theme CRUD Operations
 function ThemeModal({ customThemes, activeThemeId, onSelectTheme, onAddTheme, onRemoveTheme, onClose, COLORS }) {
   const [themeName, setThemeName] = useState("");
-  const [pitch, setPitch] = useState("#10B981");
-  const [amber, setAmber] = useState("#F59E0B");
-  const [chalk, setChalk] = useState("#F3F4F6");
-  const [ink, setInk] = useState("#111827");
+  const [colors, setColors] = useState({
+    pitch: "#1F4B3F",
+    pitchLight: "#2D6A4F",
+    pitchLighter: "#3B8362",
+    chalk: "#F7F5EF",
+    chalkDim: "#EDE9DE",
+    amber: "#E8A33D",
+    amberDeep: "#C97F1E",
+    ink: "#16232B",
+    inkSoft: "#4B5C58",
+    danger: "#C0433A",
+    line: "#FFFFFF",
+  });
 
-  const handleCreate = (e) => {
-    e.preventDefault();
+  const handleCreate = () => {
     if (!themeName.trim()) return;
-
-    const newThemeObj = {
-      id: uid(),
+    const newTheme = {
+      id: `theme_${Date.now()}`,
       name: themeName.trim(),
-      colors: {
-        pitch: pitch,
-        pitchLight: pitch,
-        pitchLighter: pitch,
-        chalk: chalk,
-        chalkDim: "#E5E7EB",
-        amber: amber,
-        amberDeep: amber,
-        ink: ink,
-        inkSoft: "#6B7280",
-        danger: "#EF4444",
-        line: "#FFFFFF",
-      },
+      colors: { ...colors }
     };
-
-    onAddTheme(newThemeObj);
+    onAddTheme(newTheme);
   };
 
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-      <Card className="max-w-md w-full p-6 space-y-4 shadow-xl max-h-[90vh] overflow-y-auto">
+      <Card className="max-w-xl w-full p-6 space-y-5 shadow-2xl max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between border-b pb-3">
-          <div className="flex items-center gap-2">
-            <Palette size={20} color={COLORS.pitch} />
-            <h2 className="font-bold text-lg" style={{ color: COLORS.ink }}>Manage UI Themes</h2>
-          </div>
-          <button onClick={onClose} className="p-1 rounded hover:bg-gray-100">
-            <X size={18} />
-          </button>
+          <h2 style={{ fontFamily: "Bebas Neue", color: COLORS.pitch }} className="text-2xl">Visual Theme Manager</h2>
+          <button onClick={onClose}><X size={20} color={COLORS.inkSoft} /></button>
         </div>
 
-        {/* Existing Themes List */}
-        <div className="space-y-2">
-          <Label COLORS={COLORS}>Available Themes</Label>
-          <div className="space-y-1.5">
+        {/* Saved Themes Selection */}
+        <div>
+          <Label COLORS={COLORS}>Presets & Custom Themes</Label>
+          <div className="grid grid-cols-2 gap-2 mt-1">
             {customThemes.map((t) => {
-              const isBase = BASE_THEMES.some((b) => b.id === t.id);
               const isSelected = t.id === activeThemeId;
+              const isSystem = BASE_THEMES.some((b) => b.id === t.id);
               return (
                 <div
                   key={t.id}
-                  className="flex items-center justify-between p-2.5 rounded-lg border text-sm"
+                  className={`p-3 rounded-lg border flex items-center justify-between cursor-pointer ${isSelected ? 'ring-2' : ''}`}
                   style={{
-                    borderColor: isSelected ? COLORS.amber : "#E5E7EB",
-                    background: isSelected ? COLORS.chalkDim : "#fff",
+                    borderColor: isSelected ? COLORS.amber : "#D9D3C1",
+                    background: t.colors.chalk
                   }}
+                  onClick={() => onSelectTheme(t.id)}
                 >
                   <div className="flex items-center gap-2">
-                    <span
-                      className="w-4 h-4 rounded-full border"
-                      style={{ background: t.colors.pitch }}
-                    />
-                    <span className="font-semibold">{t.name}</span>
-                    {isBase && <span className="text-[10px] text-gray-400 font-mono">(System)</span>}
+                    <div className="w-4 h-4 rounded-full" style={{ background: t.colors.pitch }} />
+                    <span className="text-xs font-bold" style={{ color: t.colors.ink }}>{t.name}</span>
                   </div>
-                  <div className="flex items-center gap-2">
-                    {!isSelected && (
-                      <button
-                        onClick={() => onSelectTheme(t.id)}
-                        className="text-xs text-blue-600 font-medium hover:underline"
-                      >
-                        Apply
-                      </button>
-                    )}
-                    {!isBase && (
-                      <button
-                        onClick={() => onRemoveTheme(t.id)}
-                        className="text-red-500 hover:text-red-700 p-1"
-                        title="Remove Theme"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    )}
-                  </div>
+                  {!isSystem && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onRemoveTheme(t.id); }}
+                      className="text-red-500 hover:text-red-700 p-1"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  )}
                 </div>
               );
             })}
           </div>
         </div>
 
-        {/* Create Theme Form */}
-        <form onSubmit={handleCreate} className="space-y-3 pt-3 border-t">
-          <Label COLORS={COLORS}>Create New Color Theme</Label>
+        {/* Custom Theme Creator */}
+        <div className="border-t pt-4 space-y-3">
+          <Label COLORS={COLORS}>Create Custom Palette</Label>
           <TextInput
-            placeholder="Theme Name (e.g., Neon Turf)"
+            placeholder="Theme Name (e.g. Sunset Gold)"
             value={themeName}
             onChange={(e) => setThemeName(e.target.value)}
             COLORS={COLORS}
           />
 
-          <div className="grid grid-cols-2 gap-3 text-xs">
-            <div>
-              <label className="block text-gray-600 font-medium mb-1">Main Header / Pitch</label>
-              <input
-                type="color"
-                value={pitch}
-                onChange={(e) => setPitch(e.target.value)}
-                className="w-full h-8 rounded cursor-pointer border p-0.5"
-              />
-            </div>
-            <div>
-              <label className="block text-gray-600 font-medium mb-1">Accent / Highlights</label>
-              <input
-                type="color"
-                value={amber}
-                onChange={(e) => setAmber(e.target.value)}
-                className="w-full h-8 rounded cursor-pointer border p-0.5"
-              />
-            </div>
-            <div>
-              <label className="block text-gray-600 font-medium mb-1">Background / Chalk</label>
-              <input
-                type="color"
-                value={chalk}
-                onChange={(e) => setChalk(e.target.value)}
-                className="w-full h-8 rounded cursor-pointer border p-0.5"
-              />
-            </div>
-            <div>
-              <label className="block text-gray-600 font-medium mb-1">Text / Ink</label>
-              <input
-                type="color"
-                value={ink}
-                onChange={(e) => setInk(e.target.value)}
-                className="w-full h-8 rounded cursor-pointer border p-0.5"
-              />
-            </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
+            {Object.entries(colors).map(([key, val]) => (
+              <div key={key} className="space-y-1">
+                <span className="text-[10px] uppercase font-semibold text-gray-500">{key}</span>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="color"
+                    value={val}
+                    onChange={(e) => setColors({ ...colors, [key]: e.target.value })}
+                    className="w-8 h-8 rounded border cursor-pointer p-0"
+                  />
+                  <span className="font-mono text-[10px]">{val}</span>
+                </div>
+              </div>
+            ))}
           </div>
 
-          <div className="pt-2 flex justify-end gap-2">
-            <Button variant="subtle" onClick={onClose} COLORS={COLORS}>
-              Close
-            </Button>
-            <Button variant="primary" type="submit" icon={Plus} COLORS={COLORS}>
-              Add Custom Theme
-            </Button>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="subtle" onClick={onClose} COLORS={COLORS}>Cancel</Button>
+            <Button variant="primary" icon={Plus} onClick={handleCreate} COLORS={COLORS}>Save Theme</Button>
           </div>
-        </form>
+        </div>
       </Card>
     </div>
   );
