@@ -22,7 +22,8 @@ const COLORS = {
   line: "#FFFFFF",
 };
 
-const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+// ✅ FIX: Use native crypto.randomUUID() for valid PostgreSQL UUIDs
+const uid = () => crypto.randomUUID();
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
 const THEME_CATEGORIES = ["Shooting", "Passing", "Dribbling", "Defending"];
@@ -178,10 +179,6 @@ function withTimeout(promise, ms = 4000) {
 }
 
 // ---------- SUPABASE DATA LAYER ----------
-// Local state uses camelCase (methodId, timesUsed, etc); Supabase columns use snake_case.
-// FIELD_MAP only needs entries for keys that actually change shape — everything else
-// (id, name, category, description, positions, teams, notes, status, value, date…)
-// is already the same in both cases.
 const FIELD_MAP = {
   drills: { timesUsed: "times_used" },
   sessions: { methodId: "method_id", methodName: "method_name" },
@@ -190,7 +187,7 @@ const FIELD_MAP = {
   matchdays: { teamFilter: "team_filter", presentPlayerIds: "present_player_ids" },
 };
 const ROW_TABLES = ["drills", "methods", "sessions", "ratings", "players", "formats", "matchdays"];
-const NAME_TABLES = ["categories", "teams"]; // simple string-list tables, keyed by "name"
+const NAME_TABLES = ["categories", "teams"];
 
 function camelToSnake(str) {
   return str.replace(/[A-Z]/g, (m) => "_" + m.toLowerCase());
@@ -238,8 +235,6 @@ async function seedTable(table, rows) {
   await supabase.from(table).upsert(rows.map((r) => toRow(table, r)));
 }
 
-// Diffs prevList -> nextList and pushes only what changed to Supabase.
-// Local React state updates immediately (optimistic); Supabase catches up in the background.
 async function syncRowTable(table, prevList, nextList) {
   const prevIds = new Set(prevList.map((x) => x.id));
   const nextIds = new Set(nextList.map((x) => x.id));
@@ -404,7 +399,6 @@ export default function App() {
     setTimeout(() => setToast(null), msg && msg.length > 60 ? 5000 : 2200);
   };
 
-  // Initial load + one-time seed if the database is empty
   useEffect(() => {
     (async () => {
       const [d, m, c, s, r, pl, tm, fm, md] = await Promise.all([
@@ -449,7 +443,6 @@ export default function App() {
     })();
   }, []);
 
-  // Realtime: any change made from another device refetches that table here too
   useEffect(() => {
     const setters = {
       drills: setDrills, methods: setMethods, sessions: setSessions, ratings: setRatings,
@@ -467,7 +460,6 @@ export default function App() {
     return () => { supabase.removeChannel(channel); };
   }, []);
 
-  // Generic persist helpers: update local state immediately, sync the diff to Supabase in the background.
   const drillsRef = useRefValue(drills);
   const methodsRef = useRefValue(methods);
   const sessionsRef = useRefValue(sessions);
@@ -676,7 +668,6 @@ function Header({ tab, setTab }) {
   );
 }
 
-// ---------- PLAN TAB ----------
 function resolveCategory(phase, theme) {
   return phase.defaultCategory === THEME_MARKER ? theme : phase.defaultCategory;
 }
@@ -695,7 +686,7 @@ function PlanTab({ methods, drills, drillsByCategory, sessions, persistSessions,
   const [theme, setTheme] = useState(THEME_CATEGORIES[0]);
   const [date, setDate] = useState(todayStr());
   const [notes, setNotes] = useState("");
-  const [slots, setSlots] = useState([]); // {phaseId, label, category, drillId}
+  const [slots, setSlots] = useState([]);
 
   const selectedMethod = methods.find((m) => m.id === methodId);
   const usesTheme = selectedMethod?.phases.some((p) => p.defaultCategory === THEME_MARKER);
@@ -704,7 +695,7 @@ function PlanTab({ methods, drills, drillsByCategory, sessions, persistSessions,
     if (selectedMethod) {
       setSlots(
         selectedMethod.phases.map((p) => ({
-          phaseId: p.id,
+          phaseId: p.id || uid(),
           label: p.label,
           category: resolveCategory(p, theme),
           drillId: "",
@@ -713,11 +704,9 @@ function PlanTab({ methods, drills, drillsByCategory, sessions, persistSessions,
     } else {
       setSlots([]);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [methodId]);
 
   useEffect(() => {
-    // when theme changes, re-resolve any theme-driven phase categories and clear now-invalid picks
     if (!selectedMethod) return;
     setSlots((prev) =>
       prev.map((s, i) => {
@@ -727,7 +716,6 @@ function PlanTab({ methods, drills, drillsByCategory, sessions, persistSessions,
         return { ...s, category: resolved, drillId: "" };
       })
     );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [theme]);
 
   const updateSlot = (idx, patch) => {
@@ -833,7 +821,7 @@ function PlanTab({ methods, drills, drillsByCategory, sessions, persistSessions,
                   const pool = getPool(s.category, theme, drillsByCategory);
                   const drill = drills.find((d) => d.id === s.drillId);
                   return (
-                    <div key={s.phaseId} className="relative">
+                    <div key={s.phaseId || idx} className="relative">
                       <div
                         className="absolute -left-8 top-1 h-7 w-7 rounded-full flex items-center justify-center text-xs font-bold"
                         style={{ background: COLORS.amber, color: COLORS.ink, fontFamily: "JetBrains Mono" }}
@@ -942,7 +930,6 @@ function PlanTab({ methods, drills, drillsByCategory, sessions, persistSessions,
   );
 }
 
-// ---------- HISTORY TAB ----------
 function HistoryTab({ sessions, drills, persistSessions, persistDrills, ratings, persistRatings, flash }) {
   const [expanded, setExpanded] = useState(null);
   const sorted = [...sessions].sort((a, b) => b.date.localeCompare(a.date));
@@ -1016,11 +1003,11 @@ function HistoryTab({ sessions, drills, persistSessions, persistDrills, ratings,
             {isOpen && (
               <div className="px-4 pb-4">
                 <div className="space-y-2 mb-3">
-                  {s.phases.map((p) => {
+                  {s.phases.map((p, idx) => {
                     const drill = drills.find((d) => d.id === p.drillId);
                     const isFullGame = p.category === FULL_GAME;
                     return (
-                      <div key={p.phaseId} className="rounded-lg p-2.5 flex items-center justify-between gap-3" style={{ background: COLORS.chalkDim }}>
+                      <div key={p.phaseId || idx} className="rounded-lg p-2.5 flex items-center justify-between gap-3" style={{ background: COLORS.chalkDim }}>
                         <div>
                           <div className="text-xs font-bold uppercase tracking-wide" style={{ color: COLORS.inkSoft }}>{p.label}</div>
                           <div className="text-sm font-semibold" style={{ color: COLORS.ink }}>
@@ -1056,7 +1043,6 @@ function HistoryTab({ sessions, drills, persistSessions, persistDrills, ratings,
   );
 }
 
-// ---------- DRILLS TAB ----------
 function DrillsTab({ drills, categories, persistDrills, persistCategories, avgRating, flash }) {
   const [name, setName] = useState("");
   const [category, setCategory] = useState(categories[0] || "");
@@ -1229,7 +1215,6 @@ function DrillsTab({ drills, categories, persistDrills, persistCategories, avgRa
   );
 }
 
-// ---------- METHODS TAB ----------
 function MethodsTab({ methods, categories, persistMethods, flash }) {
   const [name, setName] = useState("");
   const [phases, setPhases] = useState([{ id: uid(), label: "", defaultCategory: THEME_MARKER }]);
@@ -1304,7 +1289,7 @@ function MethodsTab({ methods, categories, persistMethods, flash }) {
             </div>
             <div className="flex flex-wrap gap-2 items-center">
               {m.phases.map((p, i) => (
-                <React.Fragment key={p.id}>
+                <React.Fragment key={p.id || i}>
                   <Pill tone="chalk">{p.label} <span style={{ opacity: 0.6 }}>· {labelFor(p.defaultCategory)}</span></Pill>
                   {i < m.phases.length - 1 && <span style={{ color: COLORS.inkSoft }}>→</span>}
                 </React.Fragment>
@@ -1331,7 +1316,7 @@ function MethodsTab({ methods, categories, persistMethods, flash }) {
         <div className="mt-3 space-y-2">
           <Label>Phases (in order)</Label>
           {phases.map((p, idx) => (
-            <div key={p.id} className="flex gap-2 items-start">
+            <div key={p.id || idx} className="flex gap-2 items-start">
               <span
                 className="h-8 w-8 shrink-0 rounded-full flex items-center justify-center text-xs font-bold mt-0.5"
                 style={{ background: COLORS.amber, color: COLORS.ink, fontFamily: "JetBrains Mono" }}
@@ -1362,7 +1347,6 @@ function MethodsTab({ methods, categories, persistMethods, flash }) {
   );
 }
 
-// ---------- MATCH DAY: rotation engine ----------
 function suggestSubInterval(n, p) {
   const g = n - p;
   if (g <= 0) return 10;
@@ -1404,7 +1388,6 @@ function generateRotationPlan(presentPlayers, format, duration, subInterval) {
   return { intervals, finalPointers: pointers };
 }
 
-// ---------- MATCH DAY TAB ----------
 function MatchDayTab({ players, teams, formats, matchdays, persistPlayers, persistTeams, persistFormats, persistMatchdays, flash }) {
   const [sub, setSub] = useState("matchdays");
   const subTabs = [
@@ -1944,7 +1927,6 @@ function MatchDayCard({ matchday, players, formats, matchdays, persistMatchdays,
 
   useEffect(() => {
     if (format) setSubInterval(suggestSubInterval(presentPlayers.length, format.positions.length));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [formatId]);
 
   const updateMatchday = async (patch) => {
