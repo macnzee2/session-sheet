@@ -2,31 +2,56 @@ import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Plus, Trash2, Star, Shuffle, Calendar, BookOpen, Layers,
   CheckCircle2, Circle, X, ChevronDown, ChevronRight,
-  Save, ClipboardList, Users, Edit3, UserPlus, Repeat
+  Save, ClipboardList, Users, Edit3, UserPlus, Repeat, Palette, AlertTriangle
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
 const FONT_IMPORT = `@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap');`;
 
-const COLORS = {
-  pitch: "#1F4B3F",
-  pitchLight: "#2D6A4F",
-  pitchLighter: "#3B8362",
-  chalk: "#F7F5EF",
-  chalkDim: "#EDE9DE",
-  amber: "#E8A33D",
-  amberDeep: "#C97F1E",
-  ink: "#16232B",
-  inkSoft: "#4B5C58",
-  danger: "#C0433A",
-  line: "#FFFFFF",
-};
+const BASE_THEMES = [
+  {
+    id: "pitch",
+    name: "Classic Pitch",
+    colors: {
+      pitch: "#1F4B3F",
+      pitchLight: "#2D6A4F",
+      pitchLighter: "#3B8362",
+      chalk: "#F7F5EF",
+      chalkDim: "#EDE9DE",
+      amber: "#E8A33D",
+      amberDeep: "#C97F1E",
+      ink: "#16232B",
+      inkSoft: "#4B5C58",
+      danger: "#C0433A",
+      line: "#FFFFFF",
+    },
+  },
+  {
+    id: "midnight",
+    name: "Midnight Tactical",
+    colors: {
+      pitch: "#0F172A",
+      pitchLight: "#1E293B",
+      pitchLighter: "#334155",
+      chalk: "#F1F5F9",
+      chalkDim: "#E2E8F0",
+      amber: "#38BDF8",
+      amberDeep: "#0284C7",
+      ink: "#0F172A",
+      inkSoft: "#475569",
+      danger: "#EF4444",
+      line: "#FFFFFF",
+    },
+  },
+];
+
+const DEFAULT_THEME = BASE_THEMES[0];
 
 // Native crypto.randomUUID() for valid PostgreSQL UUIDs
 const uid = () => crypto.randomUUID();
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
-const THEME_CATEGORIES = ["Shooting", "Passing", "Dribbling", "Defending"];
+const DEFAULT_THEMES = ["Shooting", "Passing", "Dribbling", "Defending"];
 const FULL_GAME = "Full Game";
 const CONDITIONAL_GAME = "Conditional Game";
 const THEME_MARKER = "Theme"; 
@@ -138,7 +163,7 @@ function hexToRgba(hex, alpha) {
 }
 
 const DEFAULT_FORMATS = [
-  { positions: ["DEF", "LW", "RW", "ST"] },
+  { positions: ["DEF", "LM", "RM", "ST"] },
 ];
 
 const DEFAULT_TEAMS = [SQUAD_TEAM];
@@ -166,7 +191,7 @@ function seedData() {
   }));
   const formats = DEFAULT_FORMATS.map((f) => ({ id: uid(), name: formationShapeName(f.positions), ...f }));
   return {
-    drills, methods, categories: DEFAULT_CATEGORIES, sessions: [], ratings: [],
+    drills, methods, categories: DEFAULT_CATEGORIES, sessionThemes: DEFAULT_THEMES, sessions: [], ratings: [],
     players: [], teams: DEFAULT_TEAMS, formats, matchdays: [],
   };
 }
@@ -185,9 +210,10 @@ const FIELD_MAP = {
   ratings: { sessionId: "session_id", drillId: "drill_id" },
   players: { gamesPlayed: "games_played", positionCounts: "position_counts", rotationPointer: "rotation_pointer" },
   matchdays: { teamFilter: "team_filter", presentPlayerIds: "present_player_ids" },
+  theme_presets: { themeData: "theme_data" }
 };
-const ROW_TABLES = ["drills", "methods", "sessions", "ratings", "players", "formats", "matchdays"];
-const NAME_TABLES = ["categories", "teams"];
+const ROW_TABLES = ["drills", "methods", "sessions", "ratings", "players", "formats", "matchdays", "theme_presets"];
+const NAME_TABLES = ["categories", "teams", "session_themes"];
 
 function camelToSnake(str) {
   return str.replace(/[A-Z]/g, (m) => "_" + m.toLowerCase());
@@ -263,7 +289,7 @@ function useRefValue(value) {
   return ref;
 }
 
-function Pill({ children, tone = "pitch" }) {
+function Pill({ children, tone = "pitch", COLORS = DEFAULT_THEME.colors }) {
   const map = {
     pitch: { bg: COLORS.pitchLight, fg: "#fff" },
     amber: { bg: COLORS.amber, fg: COLORS.ink },
@@ -280,7 +306,7 @@ function Pill({ children, tone = "pitch" }) {
   );
 }
 
-function StarRating({ value, onChange, size = 16, readOnly = false }) {
+function StarRating({ value, onChange, size = 16, readOnly = false, COLORS = DEFAULT_THEME.colors }) {
   const [hover, setHover] = useState(0);
   return (
     <div className="flex items-center gap-0.5">
@@ -320,7 +346,7 @@ function Card({ children, className = "", style = {} }) {
   );
 }
 
-function Button({ children, onClick, variant = "primary", size = "md", icon: Icon, disabled, type = "button", title }) {
+function Button({ children, onClick, variant = "primary", size = "md", icon: Icon, disabled, type = "button", title, COLORS = DEFAULT_THEME.colors }) {
   const base = "inline-flex items-center gap-1.5 font-semibold transition-transform active:scale-[0.97] disabled:opacity-40 disabled:pointer-events-none rounded-lg";
   const sizes = { sm: "text-xs px-2.5 py-1.5", md: "text-sm px-3.5 py-2", lg: "text-base px-5 py-2.5" };
   const variants = {
@@ -345,7 +371,7 @@ function Button({ children, onClick, variant = "primary", size = "md", icon: Ico
   );
 }
 
-function Select({ value, onChange, options, placeholder }) {
+function Select({ value, onChange, options, placeholder, COLORS = DEFAULT_THEME.colors }) {
   return (
     <select
       value={value || ""}
@@ -362,6 +388,7 @@ function Select({ value, onChange, options, placeholder }) {
 }
 
 function TextInput(props) {
+  const COLORS = props.COLORS || DEFAULT_THEME.colors;
   return (
     <input
       {...props}
@@ -371,7 +398,7 @@ function TextInput(props) {
   );
 }
 
-function Label({ children }) {
+function Label({ children, COLORS = DEFAULT_THEME.colors }) {
   return (
     <div className="text-[11px] font-bold uppercase tracking-wide mb-1" style={{ color: COLORS.inkSoft, fontFamily: "Inter" }}>
       {children}
@@ -384,15 +411,25 @@ export default function App() {
   const [drills, setDrills] = useState([]);
   const [methods, setMethods] = useState([]);
   const [categories, setCategories] = useState([]);
+  const [sessionThemes, setSessionThemes] = useState([]);
   const [sessions, setSessions] = useState([]);
   const [ratings, setRatings] = useState([]);
   const [players, setPlayers] = useState([]);
   const [teams, setTeams] = useState([]);
   const [formats, setFormats] = useState([]);
   const [matchdays, setMatchdays] = useState([]);
+  
+  // Theme state
+  const [customThemes, setCustomThemes] = useState(BASE_THEMES);
+  const [activeThemeId, setActiveThemeId] = useState("pitch");
+  const [showThemeModal, setShowThemeModal] = useState(false);
+
   const [tab, setTab] = useState("plan");
   const [toast, setToast] = useState(null);
   const [connectionWarning, setConnectionWarning] = useState(false);
+
+  const activeTheme = customThemes.find((t) => t.id === activeThemeId) || BASE_THEMES[0];
+  const COLORS = activeTheme.colors;
 
   const flash = (msg) => {
     setToast(msg);
@@ -401,10 +438,11 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      const [d, m, c, s, r, pl, tm, fm, md] = await Promise.all([
+      const [d, m, c, st, s, r, pl, tm, fm, md, tp] = await Promise.all([
         fetchTable("drills"), fetchTable("methods"), fetchTable("categories"),
-        fetchTable("sessions"), fetchTable("ratings"), fetchTable("players"),
-        fetchTable("teams"), fetchTable("formats"), fetchTable("matchdays"),
+        fetchTable("session_themes"), fetchTable("sessions"), fetchTable("ratings"), 
+        fetchTable("players"), fetchTable("teams"), fetchTable("formats"), 
+        fetchTable("matchdays"), fetchTable("theme_presets")
       ]);
 
       if ([d, m, c, s, r, pl, tm, fm, md].some((x) => x === null)) {
@@ -413,16 +451,18 @@ export default function App() {
         return;
       }
 
-      let finalDrills = d, finalMethods = m, finalCategories = c, finalFormats = fm, finalTeams = tm;
+      let finalDrills = d, finalMethods = m, finalCategories = c, finalThemes = st, finalFormats = fm, finalTeams = tm;
       if (!d.length && !m.length && !c.length && !fm.length) {
         const seed = seedData();
         finalDrills = seed.drills;
         finalMethods = seed.methods;
         finalCategories = seed.categories;
+        finalThemes = seed.sessionThemes;
         finalFormats = seed.formats;
         finalTeams = seed.teams;
         await Promise.all([
           seedTable("categories", finalCategories),
+          seedTable("session_themes", finalThemes),
           seedTable("teams", finalTeams),
           seedTable("drills", finalDrills),
           seedTable("methods", finalMethods),
@@ -433,12 +473,19 @@ export default function App() {
       setDrills(finalDrills);
       setMethods(finalMethods);
       setCategories(finalCategories);
+      setSessionThemes(finalThemes && finalThemes.length ? finalThemes : DEFAULT_THEMES);
       setSessions(s);
       setRatings(r);
       setPlayers(normalizePlayers(pl));
       setTeams(normalizeTeams(finalTeams.length ? finalTeams : DEFAULT_TEAMS));
       setFormats(finalFormats);
       setMatchdays(md);
+
+      if (tp && tp.length > 0) {
+        const parsed = tp.map(item => typeof item.themeData === 'string' ? JSON.parse(item.themeData) : item.themeData);
+        setCustomThemes([...BASE_THEMES, ...parsed.filter(p => !BASE_THEMES.some(b => b.id === p.id))]);
+      }
+
       setLoading(false);
     })();
   }, []);
@@ -447,13 +494,13 @@ export default function App() {
     const setters = {
       drills: setDrills, methods: setMethods, sessions: setSessions, ratings: setRatings,
       players: (v) => setPlayers(normalizePlayers(v)), formats: setFormats, matchdays: setMatchdays,
-      categories: setCategories, teams: (v) => setTeams(normalizeTeams(v)),
+      categories: setCategories, session_themes: setSessionThemes, teams: (v) => setTeams(normalizeTeams(v)),
     };
     const channel = supabase.channel("session-sheet-changes");
     [...ROW_TABLES, ...NAME_TABLES].forEach((table) => {
       channel.on("postgres_changes", { event: "*", schema: "public", table }, async () => {
         const fresh = await fetchTable(table);
-        if (fresh !== null) setters[table](fresh);
+        if (fresh !== null && setters[table]) setters[table](fresh);
       });
     });
     channel.subscribe();
@@ -468,7 +515,9 @@ export default function App() {
   const formatsRef = useRefValue(formats);
   const matchdaysRef = useRefValue(matchdays);
   const categoriesRef = useRefValue(categories);
+  const sessionThemesRef = useRefValue(sessionThemes);
   const teamsRef = useRefValue(teams);
+  const customThemesRef = useRefValue(customThemes);
 
   const persistDrills = useCallback(async (next) => {
     setDrills(next);
@@ -502,10 +551,41 @@ export default function App() {
     setCategories(next);
     await syncNameTable("categories", categoriesRef.current, next);
   }, []);
+  const persistSessionThemes = useCallback(async (next) => {
+    setSessionThemes(next);
+    await syncNameTable("session_themes", sessionThemesRef.current, next);
+  }, []);
   const persistTeams = useCallback(async (next) => {
     setTeams(next);
     await syncNameTable("teams", teamsRef.current, next);
   }, []);
+
+  const handleAddCustomTheme = async (newThemeObj) => {
+    const updated = [...customThemes, newThemeObj];
+    setCustomThemes(updated);
+    setActiveThemeId(newThemeObj.id);
+    setShowThemeModal(false);
+    flash(`Added theme "${newThemeObj.name}"`);
+    
+    // Persist custom theme safely
+    const customOnly = updated.filter(t => !BASE_THEMES.some(b => b.id === t.id));
+    const themeRows = customOnly.map(t => ({ id: t.id, themeData: JSON.stringify(t) }));
+    await syncRowTable("theme_presets", customThemesRef.current.filter(t => !BASE_THEMES.some(b => b.id === t.id)), themeRows);
+  };
+
+  const handleRemoveCustomTheme = async (themeId) => {
+    if (BASE_THEMES.some(b => b.id === themeId)) {
+      return flash("Cannot remove built-in system themes.");
+    }
+    const updated = customThemes.filter(t => t.id !== themeId);
+    setCustomThemes(updated);
+    if (activeThemeId === themeId) setActiveThemeId("pitch");
+    flash("Theme removed");
+
+    const customOnly = updated.filter(t => !BASE_THEMES.some(b => b.id === t.id));
+    const themeRows = customOnly.map(t => ({ id: t.id, themeData: JSON.stringify(t) }));
+    await syncRowTable("theme_presets", customThemesRef.current.filter(t => !BASE_THEMES.some(b => b.id === t.id)), themeRows);
+  };
 
   const drillsByCategory = useMemo(() => {
     const map = {};
@@ -538,9 +618,17 @@ export default function App() {
   }
 
   return (
-    <div style={{ background: COLORS.chalk, fontFamily: "Inter" }} className="rounded-xl overflow-hidden">
+    <div style={{ background: COLORS.chalk, fontFamily: "Inter" }} className="rounded-xl overflow-hidden transition-colors duration-300">
       <style>{FONT_IMPORT}</style>
-      <Header tab={tab} setTab={setTab} />
+      <Header 
+        tab={tab} 
+        setTab={setTab} 
+        COLORS={COLORS} 
+        customThemes={customThemes}
+        activeThemeId={activeThemeId}
+        setActiveThemeId={setActiveThemeId}
+        onOpenThemeModal={() => setShowThemeModal(true)}
+      />
       {connectionWarning && (
         <div
           className="px-4 sm:px-6 py-2 text-xs font-semibold"
@@ -555,10 +643,12 @@ export default function App() {
             methods={methods}
             drills={drills}
             drillsByCategory={drillsByCategory}
+            sessionThemes={sessionThemes}
             sessions={sessions}
             persistSessions={persistSessions}
             avgRating={avgRating}
             flash={flash}
+            COLORS={COLORS}
           />
         )}
         {tab === "history" && (
@@ -570,16 +660,20 @@ export default function App() {
             ratings={ratings}
             persistRatings={persistRatings}
             flash={flash}
+            COLORS={COLORS}
           />
         )}
         {tab === "drills" && (
           <DrillsTab
             drills={drills}
             categories={categories}
+            sessionThemes={sessionThemes}
             persistDrills={persistDrills}
             persistCategories={persistCategories}
+            persistSessionThemes={persistSessionThemes}
             avgRating={avgRating}
             flash={flash}
+            COLORS={COLORS}
           />
         )}
         {tab === "methods" && (
@@ -588,6 +682,7 @@ export default function App() {
             categories={categories}
             persistMethods={persistMethods}
             flash={flash}
+            COLORS={COLORS}
           />
         )}
         {tab === "matchday" && (
@@ -601,9 +696,23 @@ export default function App() {
             persistFormats={persistFormats}
             persistMatchdays={persistMatchdays}
             flash={flash}
+            COLORS={COLORS}
           />
         )}
       </div>
+
+      {showThemeModal && (
+        <ThemeModal
+          customThemes={customThemes}
+          activeThemeId={activeThemeId}
+          onSelectTheme={setActiveThemeId}
+          onAddTheme={handleAddCustomTheme}
+          onRemoveTheme={handleRemoveCustomTheme}
+          onClose={() => setShowThemeModal(false)}
+          COLORS={COLORS}
+        />
+      )}
+
       {toast && (
         <div
           className="fixed bottom-5 left-1/2 -translate-x-1/2 px-4 py-2 rounded-full shadow-lg text-sm font-semibold z-50"
@@ -616,16 +725,16 @@ export default function App() {
   );
 }
 
-function Header({ tab, setTab }) {
+function Header({ tab, setTab, COLORS, customThemes, activeThemeId, setActiveThemeId, onOpenThemeModal }) {
   const tabs = [
     { id: "plan", label: "Plan Session", icon: ClipboardList },
     { id: "history", label: "History", icon: Calendar },
-    { id: "drills", label: "Drills", icon: Layers },
+    { id: "drills", label: "Drills & Themes", icon: Layers },
     { id: "methods", label: "Methods", icon: BookOpen },
     { id: "matchday", label: "Match Day", icon: Users },
   ];
   return (
-    <div style={{ background: COLORS.pitch }} className="relative px-4 sm:px-6 pt-5 pb-0 overflow-hidden">
+    <div style={{ background: COLORS.pitch }} className="relative px-4 sm:px-6 pt-5 pb-0 overflow-hidden transition-colors duration-300">
       <div
         className="absolute inset-0 opacity-[0.07] pointer-events-none"
         style={{
@@ -641,6 +750,29 @@ function Header({ tab, setTab }) {
           <div style={{ color: COLORS.amber, fontFamily: "JetBrains Mono" }} className="text-[11px] mt-1 uppercase tracking-widest">
             Plan · Track · Rate
           </div>
+        </div>
+
+        {/* Theme Picker Header Control */}
+        <div className="flex items-center gap-2">
+          <select
+            value={activeThemeId}
+            onChange={(e) => setActiveThemeId(e.target.value)}
+            className="text-xs rounded-lg px-2 py-1.5 font-medium border-none outline-none shadow-sm"
+            style={{ background: "rgba(255,255,255,0.15)", color: "#fff" }}
+          >
+            {customThemes.map((t) => (
+              <option key={t.id} value={t.id} style={{ color: "#000" }}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={onOpenThemeModal}
+            className="p-1.5 rounded-lg text-white hover:bg-white/20 transition-colors"
+            title="Manage Visual Themes"
+          >
+            <Palette size={18} />
+          </button>
         </div>
       </div>
       <div className="relative flex gap-1 overflow-x-auto">
@@ -681,9 +813,9 @@ function getPool(resolvedCategory, theme, drillsByCategory) {
   return drillsByCategory[resolvedCategory] || [];
 }
 
-function PlanTab({ methods, drills, drillsByCategory, sessions, persistSessions, avgRating, flash }) {
+function PlanTab({ methods, drills, drillsByCategory, sessionThemes, sessions, persistSessions, avgRating, flash, COLORS }) {
   const [methodId, setMethodId] = useState(methods[0]?.id || "");
-  const [theme, setTheme] = useState(THEME_CATEGORIES[0]);
+  const [theme, setTheme] = useState(sessionThemes[0] || "Shooting");
   const [date, setDate] = useState(todayStr());
   const [notes, setNotes] = useState("");
   const [slots, setSlots] = useState([]);
@@ -766,27 +898,27 @@ function PlanTab({ methods, drills, drillsByCategory, sessions, persistSessions,
       <div>
         <Card className="p-4 sm:p-5 mb-4">
           <div className="grid sm:grid-cols-2 gap-3 mb-3 items-end">
-            {/* ✅ FIX 1: Compact date input */}
             <div>
-              <Label>Date</Label>
+              <Label COLORS={COLORS}>Date</Label>
               <div className="max-w-[170px]">
-                <TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+                <TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} COLORS={COLORS} />
               </div>
             </div>
             <div>
-              <Label>Coaching method</Label>
+              <Label COLORS={COLORS}>Coaching method</Label>
               <Select
                 value={methodId}
                 onChange={setMethodId}
                 options={methods.map((m) => ({ value: m.id, label: m.name }))}
                 placeholder="Choose a method…"
+                COLORS={COLORS}
               />
             </div>
           </div>
           <div>
-            <Label>Session theme</Label>
+            <Label COLORS={COLORS}>Session theme</Label>
             <div className="flex flex-wrap gap-2">
-              {THEME_CATEGORIES.map((t) => (
+              {sessionThemes.map((t) => (
                 <button
                   key={t}
                   onClick={() => setTheme(t)}
@@ -814,7 +946,7 @@ function PlanTab({ methods, drills, drillsByCategory, sessions, persistSessions,
               <div style={{ fontFamily: "Bebas Neue", color: COLORS.pitch, letterSpacing: 0.5 }} className="text-xl">
                 LINE-UP — {selectedMethod.name.toUpperCase()}
               </div>
-              <Button variant="dark" icon={Shuffle} onClick={autoGenerate}>Auto-generate</Button>
+              <Button variant="dark" icon={Shuffle} onClick={autoGenerate} COLORS={COLORS}>Auto-generate</Button>
             </div>
             <div className="relative pl-8">
               <div className="absolute left-[15px] top-2 bottom-2 w-0.5 border-l-2 border-dashed" style={{ borderColor: "#D9D3C1" }} />
@@ -836,7 +968,7 @@ function PlanTab({ methods, drills, drillsByCategory, sessions, persistSessions,
                           <div style={{ fontFamily: "Inter", color: COLORS.ink }} className="font-semibold text-sm">
                             {s.label}
                           </div>
-                          <Pill tone="chalk">{s.category}</Pill>
+                          <Pill tone="chalk" COLORS={COLORS}>{s.category}</Pill>
                         </div>
 
                         {isFullGame ? (
@@ -856,6 +988,7 @@ function PlanTab({ methods, drills, drillsByCategory, sessions, persistSessions,
                                 label: `${d.name}${d.timesUsed ? ` · used ${d.timesUsed}×` : ""}`,
                               }))}
                               placeholder="Select a drill…"
+                              COLORS={COLORS}
                             />
                             {drill && (
                               <div className="mt-2 flex items-center justify-between">
@@ -880,7 +1013,7 @@ function PlanTab({ methods, drills, drillsByCategory, sessions, persistSessions,
             </div>
 
             <div className="mt-4">
-              <Label>Session notes (optional)</Label>
+              <Label COLORS={COLORS}>Session notes (optional)</Label>
               <textarea
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
@@ -892,7 +1025,7 @@ function PlanTab({ methods, drills, drillsByCategory, sessions, persistSessions,
             </div>
 
             <div className="mt-4 flex justify-end">
-              <Button variant="primary" size="lg" icon={Save} onClick={saveSession}>Save session</Button>
+              <Button variant="primary" size="lg" icon={Save} onClick={saveSession} COLORS={COLORS}>Save session</Button>
             </div>
           </Card>
         ) : (
@@ -919,7 +1052,7 @@ function PlanTab({ methods, drills, drillsByCategory, sessions, persistSessions,
                 <div key={s.id} className="rounded-lg p-2.5" style={{ background: COLORS.chalkDim }}>
                   <div className="flex items-center justify-between">
                     <span className="text-sm font-semibold" style={{ color: COLORS.ink }}>{s.date}</span>
-                    <Pill tone="pitch">{s.methodName}</Pill>
+                    <Pill tone="pitch" COLORS={COLORS}>{s.methodName}</Pill>
                   </div>
                   <p className="text-xs mt-1" style={{ color: COLORS.inkSoft }}>
                     {s.theme ? `Theme: ${s.theme} · ` : ""}{s.phases.map((p) => p.label).join(" → ")}
@@ -933,7 +1066,7 @@ function PlanTab({ methods, drills, drillsByCategory, sessions, persistSessions,
   );
 }
 
-function HistoryTab({ sessions, drills, persistSessions, persistDrills, ratings, persistRatings, flash }) {
+function HistoryTab({ sessions, drills, persistSessions, persistDrills, ratings, persistRatings, flash, COLORS }) {
   const [expanded, setExpanded] = useState(null);
   const sorted = [...sessions].sort((a, b) => b.date.localeCompare(a.date));
 
@@ -997,9 +1130,9 @@ function HistoryTab({ sessions, drills, persistSessions, persistDrills, ratings,
               </div>
               <div className="flex items-center gap-2">
                 {s.status === "completed" ? (
-                  <Pill tone="pitch">Completed</Pill>
+                  <Pill tone="pitch" COLORS={COLORS}>Completed</Pill>
                 ) : (
-                  <Pill tone="amber">Planned</Pill>
+                  <Pill tone="amber" COLORS={COLORS}>Planned</Pill>
                 )}
               </div>
             </button>
@@ -1018,7 +1151,7 @@ function HistoryTab({ sessions, drills, persistSessions, persistDrills, ratings,
                           </div>
                         </div>
                         {s.status === "completed" && drill && (
-                          <StarRating value={ratingFor(s, drill.id)} onChange={(v) => rateDrill(s, drill.id, v)} />
+                          <StarRating value={ratingFor(s, drill.id)} onChange={(v) => rateDrill(s, drill.id, v)} COLORS={COLORS} />
                         )}
                       </div>
                     );
@@ -1029,11 +1162,11 @@ function HistoryTab({ sessions, drills, persistSessions, persistDrills, ratings,
                 )}
                 <div className="flex items-center gap-2">
                   {s.status !== "completed" && (
-                    <Button variant="dark" size="sm" icon={CheckCircle2} onClick={() => completeSession(s)}>
+                    <Button variant="dark" size="sm" icon={CheckCircle2} onClick={() => completeSession(s)} COLORS={COLORS}>
                       Mark complete
                     </Button>
                   )}
-                  <Button variant="danger" size="sm" icon={Trash2} onClick={() => deleteSession(s.id)}>
+                  <Button variant="danger" size="sm" icon={Trash2} onClick={() => deleteSession(s.id)} COLORS={COLORS}>
                     Delete
                   </Button>
                 </div>
@@ -1046,15 +1179,19 @@ function HistoryTab({ sessions, drills, persistSessions, persistDrills, ratings,
   );
 }
 
-{/* ✅ FIX 2: Layout & overflow management so right side of Drills tab fits screen */}
-function DrillsTab({ drills, categories, persistDrills, persistCategories, avgRating, flash }) {
+function DrillsTab({ drills, categories, sessionThemes, persistDrills, persistCategories, persistSessionThemes, avgRating, flash, COLORS }) {
   const [name, setName] = useState("");
   const [category, setCategory] = useState(categories[0] || "");
   const [drillTheme, setDrillTheme] = useState("");
   const [description, setDescription] = useState("");
   const [newCategory, setNewCategory] = useState("");
+  const [newTheme, setNewTheme] = useState("");
   const [filter, setFilter] = useState("All");
   const [editingId, setEditingId] = useState(null);
+
+  // Modal deletion workflow for category safety prompt
+  const [categoryToDelete, setCategoryToDelete] = useState(null);
+  const [reassignTarget, setReassignTarget] = useState("");
 
   const resetForm = () => {
     setName("");
@@ -1109,6 +1246,52 @@ function DrillsTab({ drills, categories, persistDrills, persistCategories, avgRa
     flash("Category added");
   };
 
+  const addTheme = async () => {
+    const t = newTheme.trim();
+    if (!t) return;
+    if (sessionThemes.includes(t)) return flash("Theme already exists");
+    await persistSessionThemes([...sessionThemes, t]);
+    setNewTheme("");
+    flash("Theme added");
+  };
+
+  const removeTheme = async (t) => {
+    await persistSessionThemes(sessionThemes.filter((x) => x !== t));
+    flash("Theme removed");
+  };
+
+  // Safe category deletion implementation
+  const handleInitiateDeleteCategory = (catName) => {
+    if (categories.length <= 1) {
+      return flash("Must keep at least one category.");
+    }
+    const remaining = categories.filter((c) => c !== catName);
+    setCategoryToDelete(catName);
+    setReassignTarget(remaining[0] || "");
+  };
+
+  const executeCategoryDeletion = async (action) => {
+    if (!categoryToDelete) return;
+
+    let updatedDrills = [...drills];
+    if (action === "reassign") {
+      updatedDrills = drills.map((d) =>
+        d.category === categoryToDelete ? { ...d, category: reassignTarget } : d
+      );
+    } else if (action === "cascade") {
+      updatedDrills = drills.filter((d) => d.category !== categoryToDelete);
+    }
+
+    const updatedCategories = categories.filter((c) => c !== categoryToDelete);
+
+    await persistDrills(updatedDrills);
+    await persistCategories(updatedCategories);
+
+    if (filter === categoryToDelete) setFilter("All");
+    setCategoryToDelete(null);
+    flash(`Removed category "${categoryToDelete}"`);
+  };
+
   const shown = filter === "All" ? drills : drills.filter((d) => d.category === filter);
 
   return (
@@ -1119,14 +1302,15 @@ function DrillsTab({ drills, categories, persistDrills, persistCategories, avgRa
             {editingId ? "EDIT DRILL" : "ADD A DRILL"}
           </div>
           <div className="space-y-2">
-            <TextInput placeholder="Drill name" value={name} onChange={(e) => setName(e.target.value)} />
-            <Select value={category} onChange={setCategory} options={categories.map((c) => ({ value: c, label: c }))} />
+            <TextInput placeholder="Drill name" value={name} onChange={(e) => setName(e.target.value)} COLORS={COLORS} />
+            <Select value={category} onChange={setCategory} options={categories.map((c) => ({ value: c, label: c }))} COLORS={COLORS} />
             {category === CONDITIONAL_GAME && (
               <Select
                 value={drillTheme}
                 onChange={setDrillTheme}
-                options={THEME_CATEGORIES.map((t) => ({ value: t, label: t }))}
+                options={sessionThemes.map((t) => ({ value: t, label: t }))}
                 placeholder="Which theme fits? (optional — works for any)"
+                COLORS={COLORS}
               />
             )}
             <textarea
@@ -1138,20 +1322,67 @@ function DrillsTab({ drills, categories, persistDrills, persistCategories, avgRa
               style={{ borderColor: "#D9D3C1" }}
             />
             <div className="flex gap-2">
-              <Button variant="primary" icon={editingId ? Save : Plus} onClick={addDrill}>
+              <Button variant="primary" icon={editingId ? Save : Plus} onClick={addDrill} COLORS={COLORS}>
                 {editingId ? "Save changes" : "Add drill"}
               </Button>
               {editingId && (
-                <Button variant="subtle" onClick={resetForm}>Cancel</Button>
+                <Button variant="subtle" onClick={resetForm} COLORS={COLORS}>Cancel</Button>
               )}
             </div>
           </div>
         </Card>
+
+        {/* Drill Category Management */}
         <Card className="p-4">
-          <div style={{ fontFamily: "Bebas Neue", color: COLORS.pitch }} className="text-lg mb-3">ADD A CATEGORY</div>
+          <div style={{ fontFamily: "Bebas Neue", color: COLORS.pitch }} className="text-lg mb-3">CATEGORIES</div>
+          <div className="flex flex-wrap gap-1.5 mb-3 max-h-40 overflow-y-auto">
+            {categories.map((c) => (
+              <div
+                key={c}
+                className="flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-full text-xs font-medium"
+                style={{ background: COLORS.chalkDim, color: COLORS.ink }}
+              >
+                <span>{c}</span>
+                <button
+                  onClick={() => handleInitiateDeleteCategory(c)}
+                  className="hover:text-red-500 p-0.5 rounded-full"
+                  title="Remove category"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
           <div className="flex gap-2">
-            <TextInput placeholder="e.g. Goalkeeping" value={newCategory} onChange={(e) => setNewCategory(e.target.value)} />
-            <Button variant="dark" icon={Plus} onClick={addCategory}>Add</Button>
+            <TextInput placeholder="e.g. Goalkeeping" value={newCategory} onChange={(e) => setNewCategory(e.target.value)} COLORS={COLORS} />
+            <Button variant="dark" icon={Plus} onClick={addCategory} COLORS={COLORS}>Add</Button>
+          </div>
+        </Card>
+
+        {/* Session Theme Management */}
+        <Card className="p-4">
+          <div style={{ fontFamily: "Bebas Neue", color: COLORS.pitch }} className="text-lg mb-3">SESSION THEMES</div>
+          <div className="flex flex-wrap gap-1.5 mb-3 max-h-40 overflow-y-auto">
+            {sessionThemes.map((t) => (
+              <div
+                key={t}
+                className="flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-full text-xs font-medium"
+                style={{ background: COLORS.amber, color: COLORS.ink }}
+              >
+                <span>{t}</span>
+                <button
+                  onClick={() => removeTheme(t)}
+                  className="hover:text-red-700 p-0.5 rounded-full"
+                  title="Remove theme"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <TextInput placeholder="e.g. Heading" value={newTheme} onChange={(e) => setNewTheme(e.target.value)} COLORS={COLORS} />
+            <Button variant="dark" icon={Plus} onClick={addTheme} COLORS={COLORS}>Add</Button>
           </div>
         </Card>
       </div>
@@ -1179,8 +1410,8 @@ function DrillsTab({ drills, categories, persistDrills, persistCategories, avgRa
                 <div className="min-w-0 flex-1">
                   <div className="text-sm font-bold truncate" style={{ color: COLORS.ink }}>{d.name}</div>
                   <div className="flex gap-1.5 mt-1 flex-wrap">
-                    <Pill tone="chalk">{d.category}</Pill>
-                    {d.theme && <Pill tone="amber">{d.theme}</Pill>}
+                    <Pill tone="chalk" COLORS={COLORS}>{d.category}</Pill>
+                    {d.theme && <Pill tone="amber" COLORS={COLORS}>{d.theme}</Pill>}
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
@@ -1215,11 +1446,72 @@ function DrillsTab({ drills, categories, persistDrills, persistCategories, avgRa
           )}
         </div>
       </div>
+
+      {/* Category Deletion Safety Confirmation Modal */}
+      {categoryToDelete && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <Card className="max-w-md w-full p-5 space-y-4 shadow-xl">
+            <div className="flex items-center gap-2 text-amber-600">
+              <AlertTriangle size={20} />
+              <h3 className="font-bold text-base">Delete Category "{categoryToDelete}"?</h3>
+            </div>
+            
+            <p className="text-xs text-gray-600">
+              There are drills assigned to this category. How would you like to handle existing drills?
+            </p>
+
+            <div className="space-y-3 pt-2">
+              <div className="p-3 bg-gray-50 rounded-lg space-y-2 border border-gray-200">
+                <p className="text-xs font-semibold text-gray-700">Option 1: Reassign Drills</p>
+                <div className="flex items-center gap-2">
+                  <Select
+                    value={reassignTarget}
+                    onChange={setReassignTarget}
+                    options={categories
+                      .filter((c) => c !== categoryToDelete)
+                      .map((c) => ({ value: c, label: c }))}
+                    COLORS={COLORS}
+                  />
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={() => executeCategoryDeletion("reassign")}
+                    COLORS={COLORS}
+                  >
+                    Reassign
+                  </Button>
+                </div>
+              </div>
+
+              <div className="p-3 bg-red-50 rounded-lg space-y-2 border border-red-100 flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-semibold text-red-800">Option 2: Delete All Drills</p>
+                  <p className="text-[10px] text-red-600">Permanently removes assigned drills.</p>
+                </div>
+                <Button
+                  variant="danger"
+                  size="sm"
+                  onClick={() => executeCategoryDeletion("cascade")}
+                  COLORS={COLORS}
+                >
+                  Delete All
+                </Button>
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-2">
+              <Button variant="subtle" size="sm" onClick={() => setCategoryToDelete(null)} COLORS={COLORS}>
+                Cancel
+              </Button>
+            </div>
+          </Card>
+        </div>
+      )}
     </div>
   );
 }
 
-function MethodsTab({ methods, categories, persistMethods, flash }) {
+function MethodsTab({ methods, categories, persistMethods, flash, COLORS }) {
   const [name, setName] = useState("");
   const [phases, setPhases] = useState([{ id: uid(), label: "", defaultCategory: THEME_MARKER }]);
   const [editingId, setEditingId] = useState(null);
@@ -1294,7 +1586,7 @@ function MethodsTab({ methods, categories, persistMethods, flash }) {
             <div className="flex flex-wrap gap-2 items-center">
               {m.phases.map((p, i) => (
                 <React.Fragment key={p.id || i}>
-                  <Pill tone="chalk">{p.label} <span style={{ opacity: 0.6 }}>· {labelFor(p.defaultCategory)}</span></Pill>
+                  <Pill tone="chalk" COLORS={COLORS}>{p.label} <span style={{ opacity: 0.6 }}>· {labelFor(p.defaultCategory)}</span></Pill>
                   {i < m.phases.length - 1 && <span style={{ color: COLORS.inkSoft }}>→</span>}
                 </React.Fragment>
               ))}
@@ -1315,10 +1607,10 @@ function MethodsTab({ methods, categories, persistMethods, flash }) {
         <p className="text-xs mb-3" style={{ color: COLORS.inkSoft }}>
           The phase order here is fixed once saved — to try a different order, save it as a new method.
         </p>
-        <Label>Method name</Label>
-        <TextInput placeholder="e.g. Small-Sided Focus" value={name} onChange={(e) => setName(e.target.value)} />
+        <Label COLORS={COLORS}>Method name</Label>
+        <TextInput placeholder="e.g. Small-Sided Focus" value={name} onChange={(e) => setName(e.target.value)} COLORS={COLORS} />
         <div className="mt-3 space-y-2">
-          <Label>Phases (in order)</Label>
+          <Label COLORS={COLORS}>Phases (in order)</Label>
           {phases.map((p, idx) => (
             <div key={p.id || idx} className="flex gap-2 items-start">
               <span
@@ -1328,8 +1620,8 @@ function MethodsTab({ methods, categories, persistMethods, flash }) {
                 {idx + 1}
               </span>
               <div className="flex-1 space-y-1.5">
-                <TextInput placeholder="Phase label (e.g. Warm-up)" value={p.label} onChange={(e) => updatePhase(idx, { label: e.target.value })} />
-                <Select value={p.defaultCategory} onChange={(v) => updatePhase(idx, { defaultCategory: v })} options={phaseCategoryOptions} />
+                <TextInput placeholder="Phase label (e.g. Warm-up)" value={p.label} onChange={(e) => updatePhase(idx, { label: e.target.value })} COLORS={COLORS} />
+                <Select value={p.defaultCategory} onChange={(v) => updatePhase(idx, { defaultCategory: v })} options={phaseCategoryOptions} COLORS={COLORS} />
               </div>
               {phases.length > 1 && (
                 <button onClick={() => removePhase(idx)} className="mt-2">
@@ -1338,13 +1630,13 @@ function MethodsTab({ methods, categories, persistMethods, flash }) {
               )}
             </div>
           ))}
-          <Button variant="ghost" size="sm" icon={Plus} onClick={addPhase}>Add phase</Button>
+          <Button variant="ghost" size="sm" icon={Plus} onClick={addPhase} COLORS={COLORS}>Add phase</Button>
         </div>
         <div className="mt-4 flex gap-2">
-          <Button variant="primary" icon={Save} onClick={saveMethod}>
+          <Button variant="primary" icon={Save} onClick={saveMethod} COLORS={COLORS}>
             {editingId ? "Save changes" : "Save method"}
           </Button>
-          {editingId && <Button variant="subtle" onClick={resetForm}>Cancel</Button>}
+          {editingId && <Button variant="subtle" onClick={resetForm} COLORS={COLORS}>Cancel</Button>}
         </div>
       </Card>
     </div>
@@ -1359,40 +1651,53 @@ function suggestSubInterval(n, p) {
   return Math.max(1, Math.round((10 / Math.max(1, Math.round(n / g))) * 2) / 2);
 }
 
+// ENFORCED FORMATION ROTATION ALGORITHM
 function generateRotationPlan(presentPlayers, format, duration, subInterval) {
-  const P = format.positions.length;
+  const requiredPositions = format.positions; 
+  const P = requiredPositions.length;
   const N = presentPlayers.length;
   if (N < P) return null;
+  
   const g = N - P;
   const numIntervals = g === 0 ? 1 : Math.max(1, Math.ceil(duration / subInterval));
   const pointers = {};
   presentPlayers.forEach((p) => { pointers[p.id] = p.rotationPointer || 0; });
   const intervals = [];
+
   for (let i = 0; i < numIntervals; i++) {
     const startMin = i === 0 ? 0 : Math.round(i * subInterval * 10) / 10;
     const endMin = Math.round(Math.min(duration, (i + 1) * subInterval) * 10) / 10;
+    
     const benchedIdxs = new Set();
     if (g > 0) {
       const startIndex = (i * g) % N;
       for (let k = 0; k < g; k++) benchedIdxs.add((startIndex + k) % N);
     }
+
     const benched = [];
-    const onField = [];
+    const activePlayers = [];
+
     presentPlayers.forEach((p, idx) => {
       if (benchedIdxs.has(idx)) {
         benched.push(p.id);
       } else {
-        const pos = format.positions[pointers[p.id] % P];
-        onField.push({ playerId: p.id, position: pos });
-        pointers[p.id] += 1;
+        activePlayers.push(p);
       }
     });
+
+    const onField = activePlayers.map((p, slotIndex) => {
+      const pos = requiredPositions[slotIndex];
+      pointers[p.id] += 1;
+      return { playerId: p.id, position: pos };
+    });
+
     intervals.push({ index: i, startMin, endMin, onField, benched });
   }
+
   return { intervals, finalPointers: pointers };
 }
 
-function MatchDayTab({ players, teams, formats, matchdays, persistPlayers, persistTeams, persistFormats, persistMatchdays, flash }) {
+function MatchDayTab({ players, teams, formats, matchdays, persistPlayers, persistTeams, persistFormats, persistMatchdays, flash, COLORS }) {
   const [sub, setSub] = useState("matchdays");
   const subTabs = [
     { id: "matchdays", label: "Match Days" },
@@ -1427,13 +1732,14 @@ function MatchDayTab({ players, teams, formats, matchdays, persistPlayers, persi
           persistPlayers={persistPlayers}
           persistMatchdays={persistMatchdays}
           flash={flash}
+          COLORS={COLORS}
         />
       )}
       {sub === "squad" && (
-        <SquadView players={players} teams={teams} persistPlayers={persistPlayers} persistTeams={persistTeams} flash={flash} />
+        <SquadView players={players} teams={teams} persistPlayers={persistPlayers} persistTeams={persistTeams} flash={flash} COLORS={COLORS} />
       )}
       {sub === "formats" && (
-        <FormatsView formats={formats} persistFormats={persistFormats} flash={flash} />
+        <FormatsView formats={formats} persistFormats={persistFormats} flash={flash} COLORS={COLORS} />
       )}
     </div>
   );
@@ -1448,7 +1754,7 @@ function TeamBadge({ team, size = 18 }) {
       style={{
         width: size, height: size, minWidth: size, borderRadius: "50%",
         background: color, color: "#fff", fontFamily: "Inter", fontWeight: 800,
-        fontSize: size * 0.52, display: "inline-flex", alignItems: "center",
+        fontSize: size * 0.52, display: "inline-flex", items: "center",
         justifyContent: "center", lineHeight: 1, flexShrink: 0,
       }}
     >
@@ -1457,7 +1763,7 @@ function TeamBadge({ team, size = 18 }) {
   );
 }
 
-function TeamToggles({ teams, selected, onToggle, size = "sm" }) {
+function TeamToggles({ teams, selected, onToggle, size = "sm", COLORS = DEFAULT_THEME.colors }) {
   return (
     <div className="flex flex-wrap gap-1.5">
       {teams.map((t) => {
@@ -1484,8 +1790,7 @@ function TeamToggles({ teams, selected, onToggle, size = "sm" }) {
   );
 }
 
-{/* ✅ FIX 3 & 4 & 5: Player profile mini symbol badges, Bulk text removal & dynamic team counter */}
-function SquadView({ players, teams, persistPlayers, persistTeams, flash }) {
+function SquadView({ players, teams, persistPlayers, persistTeams, flash, COLORS }) {
   const [name, setName] = useState("");
   const [selectedTeams, setSelectedTeams] = useState([SQUAD_TEAM]);
   const [bulk, setBulk] = useState("");
@@ -1572,24 +1877,23 @@ function SquadView({ players, teams, persistPlayers, persistTeams, flash }) {
             ))}
           </div>
           <div className="flex gap-2">
-            <TextInput placeholder="e.g. Team A" value={newTeam} onChange={(e) => setNewTeam(e.target.value)} />
-            <Button variant="dark" icon={Plus} onClick={addTeam}>Add</Button>
+            <TextInput placeholder="e.g. Team A" value={newTeam} onChange={(e) => setNewTeam(e.target.value)} COLORS={COLORS} />
+            <Button variant="dark" icon={Plus} onClick={addTeam} COLORS={COLORS}>Add</Button>
           </div>
         </Card>
 
         <Card className="p-4">
           <div style={{ fontFamily: "Bebas Neue", color: COLORS.pitch }} className="text-lg mb-3">ADD A PLAYER</div>
           <div className="space-y-2">
-            <TextInput placeholder="Player name" value={name} onChange={(e) => setName(e.target.value)} />
-            <Label>Teams</Label>
-            <TeamToggles teams={teams} selected={selectedTeams} onToggle={toggleIn(setSelectedTeams)} />
-            <Button variant="primary" icon={UserPlus} onClick={addPlayer}>Add player</Button>
+            <TextInput placeholder="Player name" value={name} onChange={(e) => setName(e.target.value)} COLORS={COLORS} />
+            <Label COLORS={COLORS}>Teams</Label>
+            <TeamToggles teams={teams} selected={selectedTeams} onToggle={toggleIn(setSelectedTeams)} COLORS={COLORS} />
+            <Button variant="primary" icon={UserPlus} onClick={addPlayer} COLORS={COLORS}>Add player</Button>
           </div>
         </Card>
 
         <Card className="p-4">
           <div style={{ fontFamily: "Bebas Neue", color: COLORS.pitch }} className="text-lg mb-3">BULK ADD</div>
-          {/* ✅ FIX 4: Removed "— handy for getting all 31 in at once." */}
           <p className="text-xs mb-2" style={{ color: COLORS.inkSoft }}>One name per line.</p>
           <textarea
             value={bulk}
@@ -1599,11 +1903,11 @@ function SquadView({ players, teams, persistPlayers, persistTeams, flash }) {
             className="w-full text-sm rounded-lg px-2.5 py-2 border outline-none resize-none mb-2"
             style={{ borderColor: "#D9D3C1" }}
           />
-          <Label>Teams</Label>
+          <Label COLORS={COLORS}>Teams</Label>
           <div className="mb-2">
-            <TeamToggles teams={teams} selected={bulkTeams} onToggle={toggleIn(setBulkTeams)} />
+            <TeamToggles teams={teams} selected={bulkTeams} onToggle={toggleIn(setBulkTeams)} COLORS={COLORS} />
           </div>
-          <Button variant="dark" icon={UserPlus} onClick={addBulk}>Add all</Button>
+          <Button variant="dark" icon={UserPlus} onClick={addBulk} COLORS={COLORS}>Add all</Button>
         </Card>
       </div>
 
@@ -1625,7 +1929,6 @@ function SquadView({ players, teams, persistPlayers, persistTeams, flash }) {
             );
           })}
         </div>
-        {/* ✅ FIX 5: Dynamic player count when filtering */}
         <p className="text-xs mb-2" style={{ color: COLORS.inkSoft }}>
           {shown.length} player{shown.length === 1 ? "" : "s"} {teamFilter === "All" ? "in the squad" : `in ${teamFilter}`}
         </p>
@@ -1642,11 +1945,9 @@ function SquadView({ players, teams, persistPlayers, persistTeams, flash }) {
                 </div>
               </div>
               <div className="flex items-center gap-2 flex-wrap">
-                {/* ✅ FIX 3: Compact symbol-only Team Badges on player card profile view */}
                 <div className="flex flex-wrap gap-1 items-center">
                   {teams.map((t) => {
                     const on = p.teams.includes(t);
-                    const color = getTeamColor(t);
                     return (
                       <button
                         key={t}
@@ -1674,7 +1975,7 @@ function SquadView({ players, teams, persistPlayers, persistTeams, flash }) {
   );
 }
 
-function FormatsView({ formats, persistFormats, flash }) {
+function FormatsView({ formats, persistFormats, flash, COLORS }) {
   const [playersPerSide, setPlayersPerSide] = useState(4);
   const [counts, setCounts] = useState({});
   const [editingId, setEditingId] = useState(null);
@@ -1755,14 +2056,14 @@ function FormatsView({ formats, persistFormats, flash }) {
               {list.map((f) => (
                 <Card key={f.id} className="p-4">
                   <div className="flex items-center justify-between mb-2">
-                    <Pill tone="amber">{f.name}</Pill>
+                    <Pill tone="amber" COLORS={COLORS}>{f.name}</Pill>
                     <div className="flex items-center gap-2">
                       <button onClick={() => startEdit(f)} title="Edit format"><Edit3 size={15} color={COLORS.inkSoft} /></button>
                       <button onClick={() => deleteFormat(f.id)} title="Delete format"><Trash2 size={15} color={COLORS.danger} /></button>
                     </div>
                   </div>
                   <div className="flex flex-wrap gap-1.5">
-                    {f.positions.map((p, i) => <Pill key={i} tone="chalk">{p}</Pill>)}
+                    {f.positions.map((p, i) => <Pill key={i} tone="chalk" COLORS={COLORS}>{p}</Pill>)}
                   </div>
                 </Card>
               ))}
@@ -1780,11 +2081,12 @@ function FormatsView({ formats, persistFormats, flash }) {
         <div style={{ fontFamily: "Bebas Neue", color: COLORS.pitch }} className="text-lg mb-3">
           {editingId ? "EDIT FORMAT" : "NEW FORMAT"}
         </div>
-        <Label>Number of players per side</Label>
+        <Label COLORS={COLORS}>Number of players per side</Label>
         <Select
           value={String(playersPerSide)}
           onChange={(v) => { setPlayersPerSide(Number(v)); setCounts({}); }}
           options={Array.from({ length: 9 }, (_, i) => i + 3).map((n) => ({ value: String(n), label: `${n}v${n}` }))}
+          COLORS={COLORS}
         />
         <p className="text-xs mt-2 mb-2 font-semibold" style={{ color: remaining === 0 ? COLORS.pitch : COLORS.amberDeep }}>
           {total} of {playersPerSide} positions selected
@@ -1826,15 +2128,15 @@ function FormatsView({ formats, persistFormats, flash }) {
           })}
         </div>
         <div className="mt-4 flex gap-2">
-          <Button variant="primary" icon={Save} onClick={saveFormat}>{editingId ? "Save changes" : "Save format"}</Button>
-          {editingId && <Button variant="subtle" onClick={resetForm}>Cancel</Button>}
+          <Button variant="primary" icon={Save} onClick={saveFormat} COLORS={COLORS}>{editingId ? "Save changes" : "Save format"}</Button>
+          {editingId && <Button variant="subtle" onClick={resetForm} COLORS={COLORS}>Cancel</Button>}
         </div>
       </Card>
     </div>
   );
 }
 
-function MatchDaysView({ players, teams, formats, matchdays, persistPlayers, persistMatchdays, flash }) {
+function MatchDaysView({ players, teams, formats, matchdays, persistPlayers, persistMatchdays, flash, COLORS }) {
   const [date, setDate] = useState(todayStr());
   const [teamFilter, setTeamFilter] = useState("All");
   const [selectedIds, setSelectedIds] = useState([]);
@@ -1879,15 +2181,14 @@ function MatchDaysView({ players, teams, formats, matchdays, persistPlayers, per
       <Card className="p-4 sm:p-5">
         <div style={{ fontFamily: "Bebas Neue", color: COLORS.pitch }} className="text-lg mb-3">NEW MATCH DAY</div>
         <div className="grid sm:grid-cols-2 gap-3 mb-3 items-end">
-          {/* ✅ FIX 1: Compact date input */}
           <div>
-            <Label>Date</Label>
+            <Label COLORS={COLORS}>Date</Label>
             <div className="max-w-[170px]">
-              <TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+              <TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} COLORS={COLORS} />
             </div>
           </div>
           <div>
-            <Label>Filter squad by team</Label>
+            <Label COLORS={COLORS}>Filter squad by team</Label>
             <div className="flex flex-wrap gap-1.5">
               {["All", ...teams].map((t) => {
                 const on = teamFilter === t;
@@ -1907,7 +2208,7 @@ function MatchDaysView({ players, teams, formats, matchdays, persistPlayers, per
             </div>
           </div>
         </div>
-        <Label>Who's here today? ({selectedIds.length} selected)</Label>
+        <Label COLORS={COLORS}>Who's here today? ({selectedIds.length} selected)</Label>
         <div className="flex flex-wrap gap-1.5 mb-3 max-h-52 overflow-y-auto p-1">
           {eligible.map((p) => {
             const on = selectedIds.includes(p.id);
@@ -1924,7 +2225,7 @@ function MatchDaysView({ players, teams, formats, matchdays, persistPlayers, per
             );
           })}
         </div>
-        <Button variant="primary" icon={Plus} onClick={createMatchDay}>Create match day</Button>
+        <Button variant="primary" icon={Plus} onClick={createMatchDay} COLORS={COLORS}>Create match day</Button>
       </Card>
 
       {[...matchdays].sort((a, b) => b.date.localeCompare(a.date)).map((md) => (
@@ -1940,17 +2241,19 @@ function MatchDaysView({ players, teams, formats, matchdays, persistPlayers, per
           onToggle={() => setExpanded(expanded === md.id ? null : md.id)}
           onDelete={() => deleteMatchDay(md.id)}
           flash={flash}
+          COLORS={COLORS}
         />
       ))}
     </div>
   );
 }
 
-function MatchDayCard({ matchday, players, formats, matchdays, persistMatchdays, persistPlayers, isOpen, onToggle, onDelete, flash }) {
+function MatchDayCard({ matchday, players, formats, matchdays, persistMatchdays, persistPlayers, isOpen, onToggle, onDelete, flash, COLORS }) {
   const presentPlayers = matchday.presentPlayerIds.map((id) => players.find((p) => p.id === id)).filter(Boolean);
   const [formatId, setFormatId] = useState(formats[0]?.id || "");
   const [opponent, setOpponent] = useState("");
   const [duration, setDuration] = useState(10);
+  const [numGamesToGenerate, setNumGamesToGenerate] = useState(1);
   const format = formats.find((f) => f.id === formatId) || formats[0];
   const suggested = format ? suggestSubInterval(presentPlayers.length, format.positions.length) : 2;
   const [subInterval, setSubInterval] = useState(suggested);
@@ -1963,25 +2266,32 @@ function MatchDayCard({ matchday, players, formats, matchdays, persistMatchdays,
     await persistMatchdays(matchdays.map((m) => (m.id === matchday.id ? { ...m, ...patch } : m)));
   };
 
-  const addGame = async () => {
+  const addGames = async () => {
     if (!format) return flash("Add a format first");
-    const plan = generateRotationPlan(presentPlayers, format, Number(duration), Number(subInterval));
-    if (!plan) return flash(`Need at least ${format.positions.length} players present for ${format.name}`);
-    const game = {
-      id: uid(),
-      formatId: format.id,
-      formatName: format.name,
-      formatGroup: `${format.positions.length}v${format.positions.length}`,
-      opponent: opponent.trim(),
-      duration: Number(duration),
-      subInterval: Number(subInterval),
-      intervals: plan.intervals,
-      finalPointers: plan.finalPointers,
-      status: "planned",
-    };
-    await updateMatchday({ games: [...matchday.games, game] });
+    const count = Math.max(1, parseInt(numGamesToGenerate, 10) || 1);
+    const newGames = [];
+
+    for (let i = 0; i < count; i++) {
+      const plan = generateRotationPlan(presentPlayers, format, Number(duration), Number(subInterval));
+      if (!plan) return flash(`Need at least ${format.positions.length} players present for ${format.name}`);
+
+      newGames.push({
+        id: uid(),
+        formatId: format.id,
+        formatName: format.name,
+        formatGroup: `${format.positions.length}v${format.positions.length}`,
+        opponent: opponent.trim() ? (count > 1 ? `${opponent.trim()} (${i + 1})` : opponent.trim()) : "",
+        duration: Number(duration),
+        subInterval: Number(subInterval),
+        intervals: plan.intervals,
+        finalPointers: plan.finalPointers,
+        status: "planned",
+      });
+    }
+
+    await updateMatchday({ games: [...matchday.games, ...newGames] });
     setOpponent("");
-    flash("Game added with rotation plan");
+    flash(`Added ${count} game${count > 1 ? "s" : ""} with strict formation plan`);
   };
 
   const regenerateGame = async (game) => {
@@ -2044,26 +2354,42 @@ function MatchDayCard({ matchday, players, formats, matchdays, persistMatchdays,
       {isOpen && (
         <div className="px-4 pb-4">
           <div className="flex flex-wrap gap-1.5 mb-4">
-            {presentPlayers.map((p) => <Pill key={p.id} tone="chalk">{p.name}</Pill>)}
+            {presentPlayers.map((p) => <Pill key={p.id} tone="chalk" COLORS={COLORS}>{p.name}</Pill>)}
           </div>
 
           <div className="rounded-lg border p-3 mb-4" style={{ borderColor: "#E4DFD0" }}>
-            <div className="text-xs font-bold uppercase tracking-wide mb-2" style={{ color: COLORS.inkSoft }}>Add a game</div>
+            <div className="text-xs font-bold uppercase tracking-wide mb-2" style={{ color: COLORS.inkSoft }}>Add games</div>
             <div className="grid sm:grid-cols-2 gap-2 mb-2">
-              <Select value={formatId} onChange={setFormatId} options={formats.map((f) => ({ value: f.id, label: `${f.positions.length}v${f.positions.length} · ${f.name}` }))} />
-              <TextInput placeholder="Opponent (optional)" value={opponent} onChange={(e) => setOpponent(e.target.value)} />
+              <Select value={formatId} onChange={setFormatId} options={formats.map((f) => ({ value: f.id, label: `${f.positions.length}v${f.positions.length} · ${f.name}` }))} COLORS={COLORS} />
+              <TextInput placeholder="Opponent (optional)" value={opponent} onChange={(e) => setOpponent(e.target.value)} COLORS={COLORS} />
             </div>
-            <div className="grid grid-cols-2 gap-2 mb-2">
+            <div className="grid grid-cols-2 gap-2 mb-3">
               <div>
-                <Label>Duration (min)</Label>
-                <TextInput type="number" min="1" value={duration} onChange={(e) => setDuration(e.target.value)} />
+                <Label COLORS={COLORS}>Duration (min)</Label>
+                <TextInput type="number" min="1" value={duration} onChange={(e) => setDuration(e.target.value)} COLORS={COLORS} />
               </div>
               <div>
-                <Label>Sub every (min)</Label>
-                <TextInput type="number" min="0.5" step="0.5" value={subInterval} onChange={(e) => setSubInterval(e.target.value)} />
+                <Label COLORS={COLORS}>Sub every (min)</Label>
+                <TextInput type="number" min="0.5" step="0.5" value={subInterval} onChange={(e) => setSubInterval(e.target.value)} COLORS={COLORS} />
               </div>
             </div>
-            <Button variant="primary" size="sm" icon={Shuffle} onClick={addGame}>Generate & add game</Button>
+            
+            <div className="flex items-end gap-2 pt-1">
+              <div className="w-28">
+                <Label COLORS={COLORS}>Games to add</Label>
+                <TextInput
+                  type="number"
+                  min="1"
+                  max="10"
+                  value={numGamesToGenerate}
+                  onChange={(e) => setNumGamesToGenerate(e.target.value)}
+                  COLORS={COLORS}
+                />
+              </div>
+              <Button variant="primary" icon={Shuffle} onClick={addGames} COLORS={COLORS}>
+                Generate Games
+              </Button>
+            </div>
           </div>
 
           <div className="space-y-3">
@@ -2075,7 +2401,7 @@ function MatchDayCard({ matchday, players, formats, matchdays, persistMatchdays,
                     {g.opponent && <span className="text-xs ml-2" style={{ color: COLORS.inkSoft }}>vs {g.opponent}</span>}
                     <span className="text-xs ml-2" style={{ color: COLORS.inkSoft }}>· {g.duration} min</span>
                   </div>
-                  {g.status === "played" ? <Pill tone="pitch">Played</Pill> : <Pill tone="amber">Planned</Pill>}
+                  {g.status === "played" ? <Pill tone="pitch" COLORS={COLORS}>Played</Pill> : <Pill tone="amber" COLORS={COLORS}>Planned</Pill>}
                 </div>
                 <div className="space-y-1.5 mb-2">
                   {g.intervals.map((iv) => (
@@ -2097,11 +2423,11 @@ function MatchDayCard({ matchday, players, formats, matchdays, persistMatchdays,
                 <div className="flex items-center gap-2 flex-wrap">
                   {g.status !== "played" && (
                     <>
-                      <Button variant="dark" size="sm" icon={CheckCircle2} onClick={() => markPlayed(g)}>Mark played</Button>
-                      <Button variant="ghost" size="sm" icon={Repeat} onClick={() => regenerateGame(g)}>Reshuffle</Button>
+                      <Button variant="dark" size="sm" icon={CheckCircle2} onClick={() => markPlayed(g)} COLORS={COLORS}>Mark played</Button>
+                      <Button variant="ghost" size="sm" icon={Repeat} onClick={() => regenerateGame(g)} COLORS={COLORS}>Reshuffle</Button>
                     </>
                   )}
-                  <Button variant="danger" size="sm" icon={Trash2} onClick={() => deleteGame(g.id)}>Delete</Button>
+                  <Button variant="danger" size="sm" icon={Trash2} onClick={() => deleteGame(g.id)} COLORS={COLORS}>Delete</Button>
                 </div>
               </div>
             ))}
@@ -2111,10 +2437,168 @@ function MatchDayCard({ matchday, players, formats, matchdays, persistMatchdays,
           </div>
 
           <div className="mt-3">
-            <Button variant="danger" size="sm" icon={Trash2} onClick={onDelete}>Delete match day</Button>
+            <Button variant="danger" size="sm" icon={Trash2} onClick={onDelete} COLORS={COLORS}>Delete match day</Button>
           </div>
         </div>
       )}
     </Card>
+  );
+}
+
+// Dedicated Modal for Custom UI Theme CRUD Operations
+function ThemeModal({ customThemes, activeThemeId, onSelectTheme, onAddTheme, onRemoveTheme, onClose, COLORS }) {
+  const [themeName, setThemeName] = useState("");
+  const [pitch, setPitch] = useState("#10B981");
+  const [amber, setAmber] = useState("#F59E0B");
+  const [chalk, setChalk] = useState("#F3F4F6");
+  const [ink, setInk] = useState("#111827");
+
+  const handleCreate = (e) => {
+    e.preventDefault();
+    if (!themeName.trim()) return;
+
+    const newThemeObj = {
+      id: uid(),
+      name: themeName.trim(),
+      colors: {
+        pitch: pitch,
+        pitchLight: pitch,
+        pitchLighter: pitch,
+        chalk: chalk,
+        chalkDim: "#E5E7EB",
+        amber: amber,
+        amberDeep: amber,
+        ink: ink,
+        inkSoft: "#6B7280",
+        danger: "#EF4444",
+        line: "#FFFFFF",
+      },
+    };
+
+    onAddTheme(newThemeObj);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+      <Card className="max-w-md w-full p-6 space-y-4 shadow-xl max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between border-b pb-3">
+          <div className="flex items-center gap-2">
+            <Palette size={20} color={COLORS.pitch} />
+            <h2 className="font-bold text-lg" style={{ color: COLORS.ink }}>Manage UI Themes</h2>
+          </div>
+          <button onClick={onClose} className="p-1 rounded hover:bg-gray-100">
+            <X size={18} />
+          </button>
+        </div>
+
+        {/* Existing Themes List */}
+        <div className="space-y-2">
+          <Label COLORS={COLORS}>Available Themes</Label>
+          <div className="space-y-1.5">
+            {customThemes.map((t) => {
+              const isBase = BASE_THEMES.some((b) => b.id === t.id);
+              const isSelected = t.id === activeThemeId;
+              return (
+                <div
+                  key={t.id}
+                  className="flex items-center justify-between p-2.5 rounded-lg border text-sm"
+                  style={{
+                    borderColor: isSelected ? COLORS.amber : "#E5E7EB",
+                    background: isSelected ? COLORS.chalkDim : "#fff",
+                  }}
+                >
+                  <div className="flex items-center gap-2">
+                    <span
+                      className="w-4 h-4 rounded-full border"
+                      style={{ background: t.colors.pitch }}
+                    />
+                    <span className="font-semibold">{t.name}</span>
+                    {isBase && <span className="text-[10px] text-gray-400 font-mono">(System)</span>}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {!isSelected && (
+                      <button
+                        onClick={() => onSelectTheme(t.id)}
+                        className="text-xs text-blue-600 font-medium hover:underline"
+                      >
+                        Apply
+                      </button>
+                    )}
+                    {!isBase && (
+                      <button
+                        onClick={() => onRemoveTheme(t.id)}
+                        className="text-red-500 hover:text-red-700 p-1"
+                        title="Remove Theme"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Create Theme Form */}
+        <form onSubmit={handleCreate} className="space-y-3 pt-3 border-t">
+          <Label COLORS={COLORS}>Create New Color Theme</Label>
+          <TextInput
+            placeholder="Theme Name (e.g., Neon Turf)"
+            value={themeName}
+            onChange={(e) => setThemeName(e.target.value)}
+            COLORS={COLORS}
+          />
+
+          <div className="grid grid-cols-2 gap-3 text-xs">
+            <div>
+              <label className="block text-gray-600 font-medium mb-1">Main Header / Pitch</label>
+              <input
+                type="color"
+                value={pitch}
+                onChange={(e) => setPitch(e.target.value)}
+                className="w-full h-8 rounded cursor-pointer border p-0.5"
+              />
+            </div>
+            <div>
+              <label className="block text-gray-600 font-medium mb-1">Accent / Highlights</label>
+              <input
+                type="color"
+                value={amber}
+                onChange={(e) => setAmber(e.target.value)}
+                className="w-full h-8 rounded cursor-pointer border p-0.5"
+              />
+            </div>
+            <div>
+              <label className="block text-gray-600 font-medium mb-1">Background / Chalk</label>
+              <input
+                type="color"
+                value={chalk}
+                onChange={(e) => setChalk(e.target.value)}
+                className="w-full h-8 rounded cursor-pointer border p-0.5"
+              />
+            </div>
+            <div>
+              <label className="block text-gray-600 font-medium mb-1">Text / Ink</label>
+              <input
+                type="color"
+                value={ink}
+                onChange={(e) => setInk(e.target.value)}
+                className="w-full h-8 rounded cursor-pointer border p-0.5"
+              />
+            </div>
+          </div>
+
+          <div className="pt-2 flex justify-end gap-2">
+            <Button variant="subtle" onClick={onClose} COLORS={COLORS}>
+              Close
+            </Button>
+            <Button variant="primary" type="submit" icon={Plus} COLORS={COLORS}>
+              Add Custom Theme
+            </Button>
+          </div>
+        </form>
+      </Card>
+    </div>
   );
 }
