@@ -26,18 +26,26 @@ function generateRotationPlan(presentPlayers, formatPositions, duration, subInte
   // ---- Fairness history from earlier games THIS match day ----
   const priorMinutes = {};
   const priorPositionCount = {};
+  const timesStartedBenchToday = {};
   presentPlayers.forEach((p) => {
     priorMinutes[p.id] = 0;
     priorPositionCount[p.id] = {};
+    timesStartedBenchToday[p.id] = 0;
   });
   existingMatchdayGames.forEach((game) => {
-    (game.intervals || []).forEach((iv) => {
+    (game.intervals || []).forEach((iv, ivIdx) => {
       const mins = (iv.endMin ?? 0) - (iv.startMin ?? 0);
       (iv.onField || []).forEach((of) => {
         if (priorMinutes[of.playerId] === undefined) return; // wasn't present today
         priorMinutes[of.playerId] += mins;
         priorPositionCount[of.playerId][of.position] = (priorPositionCount[of.playerId][of.position] || 0) + 1;
       });
+      if (ivIdx === 0) {
+        (iv.benched || []).forEach((playerId) => {
+          if (timesStartedBenchToday[playerId] === undefined) return;
+          timesStartedBenchToday[playerId] += 1;
+        });
+      }
     });
   });
 
@@ -60,9 +68,11 @@ function generateRotationPlan(presentPlayers, formatPositions, duration, subInte
   };
 
   // ---- Decide the starting XI: whoever has played the LEAST minutes today
-  // so far starts on the pitch; ties (e.g. the very first game of the day,
-  // when everyone's equal) are broken randomly, which is what makes different
-  // kids start on the bench from one game/reshuffle to the next. ----
+  // so far starts on the pitch. When minutes are tied (very common — a clean
+  // rotation tends to level everyone out after each full game), prefer to
+  // bench whoever has started FEWEST games on the bench so far today, so the
+  // same pair doesn't open on the bench two games running. Any remaining tie
+  // is broken randomly. ----
   let onFieldAssignment = {}; // playerId -> position, for whoever is on the pitch right now
   let benchedSet = new Set();
 
@@ -76,8 +86,13 @@ function generateRotationPlan(presentPlayers, formatPositions, duration, subInte
     });
   } else {
     const ranked = [...presentPlayers].sort((a, b) => {
-      const diff = runningMinutes[a.id] - runningMinutes[b.id];
-      if (diff !== 0) return diff;
+      const minutesDiff = runningMinutes[a.id] - runningMinutes[b.id];
+      if (minutesDiff !== 0) return minutesDiff;
+      // Tied on minutes: whoever has started on the bench MORE times today
+      // should play now (sort earlier), so bench duty rotates around the group
+      // instead of the same two kids repeatedly drawing the short straw.
+      const benchDiff = timesStartedBenchToday[b.id] - timesStartedBenchToday[a.id];
+      if (benchDiff !== 0) return benchDiff;
       return Math.random() - 0.5;
     });
     ranked.slice(P).forEach((p) => benchedSet.add(p.id));
@@ -2103,7 +2118,7 @@ function MatchDayTab({ players, teams, formats, matchdays, persistPlayers, persi
         />
       )}
       {sub === "squad" && (
-        <SquadView players={players} teams={teams} persistPlayers={persistPlayers} persistTeams={persistTeams} flash={flash} COLORS={COLORS} />
+        <SquadView players={players} teams={teams} matchdays={matchdays} persistPlayers={persistPlayers} persistTeams={persistTeams} flash={flash} COLORS={COLORS} />
       )}
       {sub === "formats" && (
         <FormatsView formats={formats} persistFormats={persistFormats} flash={flash} COLORS={COLORS} />
@@ -2167,13 +2182,39 @@ function TeamToggles({ teams, selected, onToggle, size = "sm", COLORS = DEFAULT_
   );
 }
 
-function SquadView({ players, teams, persistPlayers, persistTeams, flash, COLORS }) {
+// Derives "games played" and "positions played" straight from the actual match day
+// data (only counting games marked as played), rather than a separately-stored
+// counter that can drift out of sync whenever a game is deleted or un-marked.
+function computeDerivedPlayerStats(matchdays) {
+  const stats = {};
+  (matchdays || []).forEach((md) => {
+    (md.games || []).forEach((game) => {
+      if (!game.played) return;
+      const playedThisGame = new Set();
+      (game.intervals || []).forEach((iv) => {
+        (iv.onField || []).forEach((of) => {
+          if (!stats[of.playerId]) stats[of.playerId] = { gamesPlayed: 0, positionCounts: {} };
+          stats[of.playerId].positionCounts[of.position] = (stats[of.playerId].positionCounts[of.position] || 0) + 1;
+          playedThisGame.add(of.playerId);
+        });
+      });
+      playedThisGame.forEach((playerId) => {
+        if (!stats[playerId]) stats[playerId] = { gamesPlayed: 0, positionCounts: {} };
+        stats[playerId].gamesPlayed += 1;
+      });
+    });
+  });
+  return stats;
+}
+
+function SquadView({ players, teams, matchdays, persistPlayers, persistTeams, flash, COLORS }) {
   const [name, setName] = useState("");
   const [selectedTeams, setSelectedTeams] = useState([SQUAD_TEAM]);
   const [bulk, setBulk] = useState("");
   const [bulkTeams, setBulkTeams] = useState([SQUAD_TEAM]);
   const [newTeam, setNewTeam] = useState("");
   const [teamFilter, setTeamFilter] = useState("All");
+  const derivedStats = useMemo(() => computeDerivedPlayerStats(matchdays), [matchdays]);
 
   const toggleIn = (setter) => (t) =>
     setter((prev) => (prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]));
@@ -2312,14 +2353,16 @@ function SquadView({ players, teams, persistPlayers, persistTeams, flash, COLORS
           {shown.length} player{shown.length === 1 ? "" : "s"} {teamFilter === "All" ? "in the squad" : `in ${teamFilter}`}
         </p>
         <div className="space-y-2">
-          {shown.map((p) => (
+          {shown.map((p) => {
+            const derived = derivedStats[p.id] || { gamesPlayed: 0, positionCounts: {} };
+            return (
             <Card key={p.id} className="p-3 flex items-center justify-between gap-3 flex-wrap">
               <div className="min-w-[120px]">
                 <div className="text-sm font-bold" style={{ color: COLORS.ink }}>{p.name}</div>
                 <div className="text-[11px]" style={{ color: COLORS.inkSoft }}>
-                  {p.gamesPlayed || 0} games played
-                  {p.positionCounts && Object.keys(p.positionCounts).length > 0 && (
-                    <> · {Object.entries(p.positionCounts).map(([k, v]) => `${k} ${v}`).join(", ")}</>
+                  {derived.gamesPlayed} games played
+                  {Object.keys(derived.positionCounts).length > 0 && (
+                    <> · {Object.entries(derived.positionCounts).map(([k, v]) => `${k} ${v}`).join(", ")}</>
                   )}
                 </div>
               </div>
@@ -2344,7 +2387,7 @@ function SquadView({ players, teams, persistPlayers, persistTeams, flash, COLORS
                 <button onClick={() => removePlayer(p.id)} className="ml-1"><Trash2 size={15} color={COLORS.danger} /></button>
               </div>
             </Card>
-          ))}
+          );})}
           {shown.length === 0 && (
             <p className="text-sm text-center py-8" style={{ color: COLORS.inkSoft }}>No players here yet.</p>
           )}
