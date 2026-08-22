@@ -8,94 +8,148 @@ import { supabase } from "./supabaseClient";
 
 const FONT_IMPORT = `@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap');`;
 
-// FAIR POSITION ROTATION (SINGLE-DAY MATCHDAY SCOPE)
+// FAIR ROTATION ENGINE — targets equal minutes for everyone across the whole
+// match day (not just one game), keeps a continuously-playing player in the
+// same role until they're actually subbed, and hands an incoming player the
+// exact spot vacated by whoever they're replacing (which naturally reproduces
+// "swap as a pair" behaviour when bench size is 2, and "swap one at a time"
+// when bench size is 1 — without hard-coding either case).
 function generateRotationPlan(presentPlayers, formatPositions, duration, subInterval, existingMatchdayGames = []) {
-  const requiredPositions = formatPositions || []; 
+  const requiredPositions = formatPositions || [];
   const P = requiredPositions.length;
   const N = presentPlayers.length;
   if (N < P || P === 0) return null; // Need at least enough players to fill the pitch
-  
-  const g = N - P;
-  const numIntervals = g === 0 ? 1 : Math.max(1, Math.ceil(duration / subInterval));
 
-  // Random each time this is called, so pressing Reshuffle actually gives a
-  // different arrangement rather than recomputing the exact same one.
-  const benchOffset = Math.floor(Math.random() * N);
-  
-  // 1. Build a local position tracker purely from TODAY'S games generated so far
-  const todayPositionCounts = {};
+  const g = N - P; // bench size at any moment
+  const numIntervals = g <= 0 ? 1 : Math.max(1, Math.ceil(duration / subInterval));
+
+  // ---- Fairness history from earlier games THIS match day ----
+  const priorMinutes = {};
+  const priorPositionCount = {};
   presentPlayers.forEach((p) => {
-    todayPositionCounts[p.id] = {};
+    priorMinutes[p.id] = 0;
+    priorPositionCount[p.id] = {};
   });
-
-  // Tally positions played earlier TODAY (ignoring past weeks)
   existingMatchdayGames.forEach((game) => {
-    game.intervals?.forEach((iv) => {
-      iv.onField?.forEach((of) => {
-        if (todayPositionCounts[of.playerId]) {
-          const pos = of.position;
-          todayPositionCounts[of.playerId][pos] = (todayPositionCounts[of.playerId][pos] || 0) + 1;
-        }
+    (game.intervals || []).forEach((iv) => {
+      const mins = (iv.endMin ?? 0) - (iv.startMin ?? 0);
+      (iv.onField || []).forEach((of) => {
+        if (priorMinutes[of.playerId] === undefined) return; // wasn't present today
+        priorMinutes[of.playerId] += mins;
+        priorPositionCount[of.playerId][of.position] = (priorPositionCount[of.playerId][of.position] || 0) + 1;
       });
     });
   });
+
+  const runningMinutes = { ...priorMinutes };
+  const runningPositionCount = {};
+  presentPlayers.forEach((p) => { runningPositionCount[p.id] = { ...priorPositionCount[p.id] }; });
+
+  const leastPlayedPosition = (playerId, availablePositions) => {
+    const player = presentPlayers.find((p) => p.id === playerId);
+    if (player?.preferredPosition && availablePositions.includes(player.preferredPosition)) {
+      return player.preferredPosition;
+    }
+    const sorted = [...availablePositions].sort((a, b) => {
+      const ca = runningPositionCount[playerId][a] || 0;
+      const cb = runningPositionCount[playerId][b] || 0;
+      if (ca !== cb) return ca - cb;
+      return Math.random() - 0.5;
+    });
+    return sorted[0];
+  };
+
+  // ---- Decide the starting XI: whoever has played the LEAST minutes today
+  // so far starts on the pitch; ties (e.g. the very first game of the day,
+  // when everyone's equal) are broken randomly, which is what makes different
+  // kids start on the bench from one game/reshuffle to the next. ----
+  let onFieldAssignment = {}; // playerId -> position, for whoever is on the pitch right now
+  let benchedSet = new Set();
+
+  if (g <= 0) {
+    const available = [...requiredPositions];
+    const order = [...presentPlayers].sort(() => Math.random() - 0.5);
+    order.forEach((p) => {
+      const pos = leastPlayedPosition(p.id, available);
+      available.splice(available.indexOf(pos), 1);
+      onFieldAssignment[p.id] = pos;
+    });
+  } else {
+    const ranked = [...presentPlayers].sort((a, b) => {
+      const diff = runningMinutes[a.id] - runningMinutes[b.id];
+      if (diff !== 0) return diff;
+      return Math.random() - 0.5;
+    });
+    ranked.slice(P).forEach((p) => benchedSet.add(p.id));
+    const available = [...requiredPositions];
+    ranked.slice(0, P).forEach((p) => {
+      const pos = leastPlayedPosition(p.id, available);
+      available.splice(available.indexOf(pos), 1);
+      onFieldAssignment[p.id] = pos;
+    });
+  }
 
   const intervals = [];
 
-  // 2. Generate intervals for the CURRENT game
   for (let i = 0; i < numIntervals; i++) {
     const startMin = i === 0 ? 0 : Math.round(i * subInterval * 10) / 10;
     const endMin = Math.round(Math.min(duration, (i + 1) * subInterval) * 10) / 10;
-    
-    // Select bench players sequentially for this game (randomized starting point per call)
-    const benchedIdxs = new Set();
-    if (g > 0) {
-      const startIndex = ((i * g) + benchOffset) % N;
-      for (let k = 0; k < g; k++) benchedIdxs.add((startIndex + k) % N);
-    }
+    const intervalMins = endMin - startMin;
 
-    const benched = [];
-    const activePlayers = [];
+    if (i > 0 && g > 0) {
+      // Substitute exactly `g` players: whoever's played the MOST minutes so
+      // far comes off, whoever's played the LEAST comes on — a continuously
+      // playing kid who isn't in either group simply isn't touched, so they
+      // stay in their role. Incoming players take over the exact position(s)
+      // vacated, rather than everyone being reassigned from scratch.
+      const onFieldIds = Object.keys(onFieldAssignment);
+      const benchIds = [...benchedSet];
 
-    presentPlayers.forEach((p, idx) => {
-      if (benchedIdxs.has(idx)) {
-        benched.push(p.id);
-      } else {
-        activePlayers.push(p);
-      }
-    });
+      const comingOff = [...onFieldIds]
+        .sort((a, b) => {
+          const diff = runningMinutes[b] - runningMinutes[a];
+          if (diff !== 0) return diff;
+          return Math.random() - 0.5;
+        })
+        .slice(0, g);
 
-    // 3. Assign positions prioritizing positions the player has played LEAST TODAY
-    // (ties broken randomly, so equally-fair options don't always resolve the same way)
-    const onField = [];
-    const availablePositions = [...requiredPositions];
+      const comingOn = [...benchIds]
+        .sort((a, b) => {
+          const diff = runningMinutes[a] - runningMinutes[b];
+          if (diff !== 0) return diff;
+          return Math.random() - 0.5;
+        })
+        .slice(0, g);
 
-    activePlayers.forEach((player) => {
-      // Respect fixed manual overrides if specified (e.g., dedicated GK)
-      if (player.preferredPosition && availablePositions.includes(player.preferredPosition)) {
-        const posIndex = availablePositions.indexOf(player.preferredPosition);
-        const assignedPos = availablePositions.splice(posIndex, 1)[0];
-        
-        todayPositionCounts[player.id][assignedPos] = (todayPositionCounts[player.id][assignedPos] || 0) + 1;
-        onField.push({ playerId: player.id, position: assignedPos });
-        return;
-      }
+      const vacatedPositions = comingOff.map((id) => onFieldAssignment[id]);
+      const incomingOrder = [...comingOn].sort(() => Math.random() - 0.5);
 
-      // Otherwise, sort available positions by what this player has done LEAST today,
-      // breaking ties randomly rather than always picking the first in the list
-      availablePositions.sort((a, b) => {
-        const countA = todayPositionCounts[player.id][a] || 0;
-        const countB = todayPositionCounts[player.id][b] || 0;
-        if (countA !== countB) return countA - countB;
-        return Math.random() - 0.5;
+      incomingOrder.forEach((playerId) => {
+        // Among the spots actually up for grabs this substitution, prefer
+        // whichever one this player has played least — a little extra
+        // fairness on top of the raw handoff, when there's a genuine choice.
+        vacatedPositions.sort((a, b) => {
+          const ca = runningPositionCount[playerId][a] || 0;
+          const cb = runningPositionCount[playerId][b] || 0;
+          return ca - cb;
+        });
+        const pos = vacatedPositions.shift();
+        onFieldAssignment[playerId] = pos;
       });
 
-      const assignedPos = availablePositions.shift();
-      
-      // Update local count for the next interval calculation
-      todayPositionCounts[player.id][assignedPos] = (todayPositionCounts[player.id][assignedPos] || 0) + 1;
+      comingOff.forEach((id) => {
+        delete onFieldAssignment[id];
+        benchedSet.add(id);
+      });
+      comingOn.forEach((id) => benchedSet.delete(id));
+    }
 
-      onField.push({ playerId: player.id, position: assignedPos });
+    const onField = Object.entries(onFieldAssignment).map(([playerId, position]) => ({ playerId, position }));
+    const benched = [...benchedSet];
+
+    onField.forEach(({ playerId, position }) => {
+      runningMinutes[playerId] += intervalMins;
+      runningPositionCount[playerId][position] = (runningPositionCount[playerId][position] || 0) + 1;
     });
 
     intervals.push({ index: i, startMin, endMin, onField, benched });
@@ -108,6 +162,7 @@ function generateRotationPlan(presentPlayers, formatPositions, duration, subInte
 function MatchDayCard({ matchday, roster, formats, onUpdateMatchday, onDelete, COLORS = DEFAULT_THEME.colors }) {
   const [numGamesToAdd, setNumGamesToAdd] = useState(1);
   const [selectedFormatId, setSelectedFormatId] = useState(formats[0]?.id || '');
+  const [opponent, setOpponent] = useState('');
   const [gameDuration, setGameDuration] = useState(10);
   const [subInterval, setSubInterval] = useState(2);
   const [isMatchdayCollapsed, setIsMatchdayCollapsed] = useState(false);
@@ -175,6 +230,7 @@ function MatchDayCard({ matchday, roster, formats, onUpdateMatchday, onDelete, C
         positions: fmt.positions,
         duration: Number(gameDuration),
         subInterval: Number(subInterval),
+        opponent: opponent.trim(),
         played: isPastEvent,
         intervals: plan.intervals
       });
@@ -252,7 +308,7 @@ function MatchDayCard({ matchday, roster, formats, onUpdateMatchday, onDelete, C
 
           <div className="rounded-lg border p-3" style={{ borderColor: "#E4DFD0" }}>
             <div className="text-xs font-bold uppercase tracking-wide mb-2" style={{ color: COLORS.inkSoft }}>Add Games</div>
-            <div className="grid sm:grid-cols-3 gap-2 mb-2">
+            <div className="grid sm:grid-cols-4 gap-2 mb-2">
               <div>
                 <Label COLORS={COLORS}>Format</Label>
                 <Select
@@ -261,6 +317,10 @@ function MatchDayCard({ matchday, roster, formats, onUpdateMatchday, onDelete, C
                   options={formats.map((f) => ({ value: f.id, label: `${f.positions.length}v${f.positions.length} · ${f.name}` }))}
                   COLORS={COLORS}
                 />
+              </div>
+              <div>
+                <Label COLORS={COLORS}>Opponent (optional)</Label>
+                <TextInput placeholder="e.g. Riverside FC" value={opponent} onChange={(e) => setOpponent(e.target.value)} COLORS={COLORS} />
               </div>
               <div>
                 <Label COLORS={COLORS}>Duration (mins)</Label>
@@ -297,7 +357,7 @@ function MatchDayCard({ matchday, roster, formats, onUpdateMatchday, onDelete, C
                       <div className="flex items-center gap-2">
                         {isCollapsed ? <ChevronRight size={15} color={COLORS.inkSoft} /> : <ChevronDown size={15} color={COLORS.inkSoft} />}
                         <span className="text-sm font-bold" style={{ color: COLORS.ink }}>
-                          Game {gIdx + 1}
+                          Game {gIdx + 1}{game.opponent ? ` vs ${game.opponent}` : ""}
                         </span>
                         <span className="text-xs" style={{ color: COLORS.inkSoft }}>
                           {game.positions?.length}v{game.positions?.length} · {game.formatName} · {game.duration} mins
