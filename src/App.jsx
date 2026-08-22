@@ -180,7 +180,10 @@ function MatchDayCard({ matchday, roster, formats, onUpdateMatchday, onDelete, C
   const [opponent, setOpponent] = useState('');
   const [gameDuration, setGameDuration] = useState(10);
   const [subInterval, setSubInterval] = useState(2);
-  const [isMatchdayCollapsed, setIsMatchdayCollapsed] = useState(false);
+  const [isMatchdayCollapsed, setIsMatchdayCollapsed] = useState(() => {
+    const games = matchday.games || [];
+    return games.length > 0 && games.every((g) => g.played);
+  });
   const [collapsedGames, setCollapsedGames] = useState({});
 
   const presentPlayers = roster.filter((p) => (matchday.presentPlayerIds || []).includes(p.id));
@@ -2562,6 +2565,7 @@ function MatchDaysView({ players, teams, formats, matchdays, persistPlayers, per
   const [date, setDate] = useState(todayStr());
   const [teamFilter, setTeamFilter] = useState("All");
   const [selectedIds, setSelectedIds] = useState([]);
+  const [showHistory, setShowHistory] = useState(false);
 
   const eligible = (teamFilter === "All" ? players : players.filter((p) => p.teams.includes(teamFilter)))
     .slice()
@@ -2587,6 +2591,11 @@ function MatchDaysView({ players, teams, formats, matchdays, persistPlayers, per
     const updated = matchdays.map((md) => (md.id === updatedMatchday.id ? updatedMatchday : md));
     await persistMatchdays(updated);
   };
+
+  const isMatchdayComplete = (md) => (md.games || []).length > 0 && md.games.every((g) => g.played);
+  const sortedMatchdays = [...matchdays].sort((a, b) => b.date.localeCompare(a.date));
+  const currentMatchdays = sortedMatchdays.filter((md) => !isMatchdayComplete(md));
+  const historyMatchdays = sortedMatchdays.filter((md) => isMatchdayComplete(md));
 
   if (!players.length) {
     return (
@@ -2644,9 +2653,9 @@ function MatchDaysView({ players, teams, formats, matchdays, persistPlayers, per
         </Button>
       </Card>
 
-      {/* Matchday Cards Display */}
+      {/* Active match days */}
       <div>
-        {matchdays.map((md) => (
+        {currentMatchdays.map((md) => (
           <MatchDayCard
             key={md.id}
             matchday={md}
@@ -2657,7 +2666,42 @@ function MatchDaysView({ players, teams, formats, matchdays, persistPlayers, per
             COLORS={COLORS}
           />
         ))}
+        {currentMatchdays.length === 0 && historyMatchdays.length > 0 && (
+          <p className="text-sm text-center py-6" style={{ color: COLORS.inkSoft }}>
+            No active match days — everything's marked complete. See History below.
+          </p>
+        )}
       </div>
+
+      {historyMatchdays.length > 0 && (
+        <div>
+          <button
+            onClick={() => setShowHistory(!showHistory)}
+            className="w-full flex items-center gap-2 p-3 rounded-lg"
+            style={{ background: COLORS.chalkDim }}
+          >
+            {showHistory ? <ChevronDown size={16} color={COLORS.inkSoft} /> : <ChevronRight size={16} color={COLORS.inkSoft} />}
+            <span style={{ fontFamily: "Bebas Neue", color: COLORS.pitch, letterSpacing: 0.5 }} className="text-lg">
+              HISTORY ({historyMatchdays.length})
+            </span>
+          </button>
+          {showHistory && (
+            <div className="mt-3">
+              {historyMatchdays.map((md) => (
+                <MatchDayCard
+                  key={md.id}
+                  matchday={md}
+                  roster={players}
+                  formats={formats}
+                  onUpdateMatchday={handleUpdateMatchday}
+                  onDelete={() => deleteMatchDay(md.id)}
+                  COLORS={COLORS}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
