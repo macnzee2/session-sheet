@@ -2603,7 +2603,9 @@ function MatchDaysView({ players, teams, formats, matchdays, persistPlayers, per
         <div className="grid sm:grid-cols-2 gap-3 mb-4">
           <div>
             <Label COLORS={COLORS}>Date</Label>
-            <TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} COLORS={COLORS} />
+            <div className="max-w-[170px]">
+              <TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} COLORS={COLORS} />
+            </div>
           </div>
           <div>
             <Label COLORS={COLORS}>Filter Squad Group</Label>
