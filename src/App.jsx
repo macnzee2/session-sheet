@@ -3,7 +3,7 @@ import {
   Plus, Trash2, Star, Shuffle, Calendar, BookOpen, Layers,
   CheckCircle2, Circle, X, ChevronDown, ChevronRight, ChevronLeft,
   Save, ClipboardList, Users, Edit3, UserPlus, Repeat, Palette, AlertTriangle,
-  Download, Share2, Image as ImageIcon
+  Download, Share2, Image as ImageIcon, Settings, GripVertical
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 import { toPng } from "html-to-image";
@@ -675,7 +675,7 @@ const FIELD_MAP = {
 };
 const ROW_TABLES = ["drills", "methods", "sessions", "ratings", "players", "formats", "matchdays", "theme_presets", "calendar_settings"];
 const NAME_TABLES = ["categories", "teams", "session_themes"];
-const DEFAULT_CALENDAR_SETTINGS = { id: "default", trainingDays: [], playingDays: [], holidays: [] };
+const DEFAULT_CALENDAR_SETTINGS = { id: "default", trainingDays: [], playingDays: [], holidays: [], tabOrder: [] };
 
 function camelToSnake(str) {
   return str.replace(/[A-Z]/g, (m) => "_" + m.toLowerCase());
@@ -1106,6 +1106,7 @@ export default function App() {
         activeThemeId={activeThemeId}
         setActiveThemeId={setActiveThemeId}
         onOpenThemeModal={() => setShowThemeModal(true)}
+        tabOrder={calendarSettings.tabOrder}
       />
       {connectionWarning && (
         <div
@@ -1189,6 +1190,8 @@ export default function App() {
           onAddTheme={handleAddCustomTheme}
           onRemoveTheme={handleRemoveCustomTheme}
           onClose={() => setShowThemeModal(false)}
+          tabOrder={calendarSettings.tabOrder && calendarSettings.tabOrder.length ? calendarSettings.tabOrder : DEFAULT_TAB_ORDER}
+          onReorderTabs={(next) => persistCalendarSettings({ ...calendarSettings, tabOrder: next })}
           COLORS={COLORS}
         />
       )}
@@ -1205,14 +1208,22 @@ export default function App() {
   );
 }
 
-function Header({ tab, setTab, COLORS, customThemes, activeThemeId, setActiveThemeId, onOpenThemeModal }) {
-  const tabs = [
-    { id: "plan", label: "Plan Session", icon: ClipboardList },
-    { id: "drills", label: "Drills & Themes", icon: Layers },
-    { id: "methods", label: "Methods", icon: BookOpen },
-    { id: "matchday", label: "Match Day", icon: Users },
-    { id: "calendar", label: "Calendar", icon: Calendar },
-  ];
+const DEFAULT_TAB_DEFS = [
+  { id: "plan", label: "Plan Session", icon: ClipboardList },
+  { id: "drills", label: "Drills & Themes", icon: Layers },
+  { id: "methods", label: "Methods", icon: BookOpen },
+  { id: "matchday", label: "Match Day", icon: Users },
+  { id: "calendar", label: "Calendar", icon: Calendar },
+];
+const DEFAULT_TAB_ORDER = DEFAULT_TAB_DEFS.map((t) => t.id);
+
+function Header({ tab, setTab, COLORS, customThemes, activeThemeId, setActiveThemeId, onOpenThemeModal, tabOrder }) {
+  const order = tabOrder && tabOrder.length ? tabOrder : DEFAULT_TAB_ORDER;
+  const tabs = order
+    .map((id) => DEFAULT_TAB_DEFS.find((t) => t.id === id))
+    .filter(Boolean);
+  // Catch any tab that isn't in the saved order yet (e.g. a newly added tab)
+  DEFAULT_TAB_DEFS.forEach((t) => { if (!tabs.some((x) => x.id === t.id)) tabs.push(t); });
   return (
     <div style={{ background: COLORS.pitch }} className="relative px-4 sm:px-6 pt-5 pb-0 overflow-hidden transition-colors duration-300">
       <div
@@ -1741,7 +1752,6 @@ function CalendarTab({ sessions, matchdays, calendarSettings, persistCalendarSet
   });
   const [selectedDate, setSelectedDate] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
-  const [newHoliday, setNewHoliday] = useState("");
 
   const trainingDays = calendarSettings.trainingDays || [];
   const playingDays = calendarSettings.playingDays || [];
@@ -1753,11 +1763,11 @@ function CalendarTab({ sessions, matchdays, calendarSettings, persistCalendarSet
     persistCalendarSettings({ ...calendarSettings, [arrKey]: next });
   };
 
-  const addHoliday = () => {
-    if (!newHoliday) return;
-    if (holidays.includes(newHoliday)) return flash("Already marked as a holiday");
-    persistCalendarSettings({ ...calendarSettings, holidays: [...holidays, newHoliday].sort() });
-    setNewHoliday("");
+  const toggleHoliday = (dateStr) => {
+    const next = holidays.includes(dateStr)
+      ? holidays.filter((h) => h !== dateStr)
+      : [...holidays, dateStr].sort();
+    persistCalendarSettings({ ...calendarSettings, holidays: next });
   };
   const removeHoliday = (date) => {
     persistCalendarSettings({ ...calendarSettings, holidays: holidays.filter((h) => h !== date) });
@@ -1802,8 +1812,8 @@ function CalendarTab({ sessions, matchdays, calendarSettings, persistCalendarSet
           </div>
           <Button variant="subtle" size="sm" icon={ChevronRight} onClick={() => changeMonth(1)} COLORS={COLORS} />
         </div>
-        <Button variant="ghost" size="sm" onClick={() => setShowSettings(!showSettings)} COLORS={COLORS}>
-          {showSettings ? "Hide" : "Set training/playing days & holidays"}
+        <Button variant="ghost" size="sm" icon={showSettings ? X : Settings} onClick={() => setShowSettings(!showSettings)} COLORS={COLORS}>
+          {showSettings ? "Close" : "Configure"}
         </Button>
       </div>
 
@@ -1848,12 +1858,9 @@ function CalendarTab({ sessions, matchdays, calendarSettings, persistCalendarSet
             </div>
           </div>
           <Label COLORS={COLORS}>Holidays / blocked-out dates</Label>
-          <div className="flex gap-2 mb-2">
-            <div className="max-w-[170px]">
-              <TextInput type="date" value={newHoliday} onChange={(e) => setNewHoliday(e.target.value)} COLORS={COLORS} />
-            </div>
-            <Button variant="dark" size="sm" icon={Plus} onClick={addHoliday} COLORS={COLORS}>Add</Button>
-          </div>
+          <p className="text-xs mb-2" style={{ color: COLORS.inkSoft }}>
+            Hover any date in the calendar below and click the small toggle that appears to mark or unmark it as a holiday.
+          </p>
           <div className="flex flex-wrap gap-1.5">
             {holidays.map((h) => (
               <div key={h} className="flex items-center gap-1 pl-2.5 pr-1.5 py-1 rounded-full" style={{ background: COLORS.chalkDim }}>
@@ -1861,7 +1868,7 @@ function CalendarTab({ sessions, matchdays, calendarSettings, persistCalendarSet
                 <button onClick={() => removeHoliday(h)}><X size={12} color={COLORS.inkSoft} /></button>
               </div>
             ))}
-            {holidays.length === 0 && <p className="text-xs" style={{ color: COLORS.inkSoft }}>No holidays added yet.</p>}
+            {holidays.length === 0 && <p className="text-xs" style={{ color: COLORS.inkSoft }}>No holidays marked yet.</p>}
           </div>
         </Card>
       )}
@@ -1900,21 +1907,31 @@ function CalendarTab({ sessions, matchdays, calendarSettings, persistCalendarSet
             else if (isPlaying) bg = hexToRgba(COLORS.amber, 0.16);
 
             return (
-              <button
+              <div
                 key={idx}
                 onClick={() => setSelectedDate(isSelected ? null : dateStr)}
-                className="rounded-lg p-1.5 text-left min-h-[62px] relative"
+                className="group rounded-lg p-1.5 text-left min-h-[62px] relative cursor-pointer"
                 style={{
                   background: bg,
                   border: isSelected ? `2px solid ${COLORS.pitch}` : isToday ? `1.5px solid ${COLORS.amber}` : "1px solid transparent",
                 }}
               >
-                <div className="text-xs font-bold" style={{ color: isHoliday ? "#999" : COLORS.ink }}>{d.getDate()}</div>
+                <div className="flex items-center justify-between">
+                  <div className="text-xs font-bold" style={{ color: isHoliday ? "#999" : COLORS.ink }}>{d.getDate()}</div>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); toggleHoliday(dateStr); }}
+                    title={isHoliday ? "Unmark as holiday" : "Mark as holiday"}
+                    className="w-4 h-4 rounded-full flex items-center justify-center opacity-25 group-hover:opacity-100 transition-opacity"
+                    style={{ background: isHoliday ? COLORS.pitch : "#bbb" }}
+                  >
+                    <X size={9} color="#fff" strokeWidth={3} />
+                  </button>
+                </div>
                 <div className="flex items-center gap-1 mt-1 flex-wrap">
                   {daySessions.length > 0 && <ClipboardList size={12} color={COLORS.pitch} />}
                   {dayMatchdays.length > 0 && <Users size={12} color={COLORS.amberDeep || COLORS.pitch} />}
                 </div>
-              </button>
+              </div>
             );
           })}
         </div>
@@ -3051,7 +3068,7 @@ function MatchDaysView({ players, teams, formats, matchdays, persistPlayers, per
   );
 }
 
-function ThemeModal({ customThemes, activeThemeId, onSelectTheme, onAddTheme, onRemoveTheme, onClose, COLORS }) {
+function ThemeModal({ customThemes, activeThemeId, onSelectTheme, onAddTheme, onRemoveTheme, onClose, tabOrder, onReorderTabs, COLORS }) {
   const [themeName, setThemeName] = useState("");
   const [colors, setColors] = useState({
     pitch: "#1F4B3F",
@@ -3077,12 +3094,55 @@ function ThemeModal({ customThemes, activeThemeId, onSelectTheme, onAddTheme, on
     onAddTheme(newTheme);
   };
 
+  const moveTab = (index, delta) => {
+    const next = [...tabOrder];
+    const target = index + delta;
+    if (target < 0 || target >= next.length) return;
+    [next[index], next[target]] = [next[target], next[index]];
+    onReorderTabs(next);
+  };
+
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
       <Card className="max-w-xl w-full p-6 space-y-5 shadow-2xl max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between border-b pb-3">
           <h2 style={{ fontFamily: "Bebas Neue", color: COLORS.pitch }} className="text-2xl">Visual Theme Manager</h2>
           <button onClick={onClose}><X size={20} color={COLORS.inkSoft} /></button>
+        </div>
+
+        {/* Tab Order */}
+        <div>
+          <Label COLORS={COLORS}>Tab Order</Label>
+          <div className="space-y-1.5 mt-1">
+            {tabOrder.map((tabId, idx) => {
+              const def = DEFAULT_TAB_DEFS.find((t) => t.id === tabId);
+              if (!def) return null;
+              const Icon = def.icon;
+              return (
+                <div key={tabId} className="flex items-center gap-2 rounded-lg px-3 py-2" style={{ background: COLORS.chalkDim }}>
+                  <GripVertical size={14} color={COLORS.inkSoft} />
+                  <Icon size={14} color={COLORS.pitch} />
+                  <span className="text-sm font-semibold flex-1" style={{ color: COLORS.ink }}>{def.label}</span>
+                  <button
+                    onClick={() => moveTab(idx, -1)}
+                    disabled={idx === 0}
+                    className="w-6 h-6 rounded-full flex items-center justify-center disabled:opacity-25"
+                    style={{ background: "#fff", border: "1px solid #D9D3C1" }}
+                  >
+                    <ChevronDown size={13} color={COLORS.ink} style={{ transform: "rotate(180deg)" }} />
+                  </button>
+                  <button
+                    onClick={() => moveTab(idx, 1)}
+                    disabled={idx === tabOrder.length - 1}
+                    className="w-6 h-6 rounded-full flex items-center justify-center disabled:opacity-25"
+                    style={{ background: "#fff", border: "1px solid #D9D3C1" }}
+                  >
+                    <ChevronDown size={13} color={COLORS.ink} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
         </div>
 
         {/* Saved Themes Selection */}
