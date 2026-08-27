@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Plus, Trash2, Star, Shuffle, Calendar, BookOpen, Layers,
-  CheckCircle2, Circle, X, ChevronDown, ChevronRight,
-  Save, ClipboardList, Users, Edit3, UserPlus, Repeat, Palette, AlertTriangle
+  CheckCircle2, Circle, X, ChevronDown, ChevronRight, ChevronLeft,
+  Save, ClipboardList, Users, Edit3, UserPlus, Repeat, Palette, AlertTriangle,
+  Download, Share2, Image as ImageIcon
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
+import { toPng } from "html-to-image";
 
 const FONT_IMPORT = `@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap');`;
 
@@ -174,7 +176,8 @@ function generateRotationPlan(presentPlayers, formatPositions, duration, subInte
 }
 
 // --- MATCHDAY CARD COMPONENT ---
-function MatchDayCard({ matchday, roster, formats, onUpdateMatchday, onDelete, COLORS = DEFAULT_THEME.colors }) {
+function MatchDayCard({ matchday, roster, formats, onUpdateMatchday, onDelete, flash, COLORS = DEFAULT_THEME.colors }) {
+  const gameRefs = React.useRef({});
   const [numGamesToAdd, setNumGamesToAdd] = useState(1);
   const [selectedFormatId, setSelectedFormatId] = useState(formats[0]?.id || '');
   const [opponent, setOpponent] = useState('');
@@ -366,7 +369,12 @@ function MatchDayCard({ matchday, roster, formats, onUpdateMatchday, onDelete, C
               {(matchday.games || []).map((game, gIdx) => {
                 const isCollapsed = collapsedGames[game.id];
                 return (
-                  <div key={game.id} className="rounded-lg border overflow-hidden" style={{ borderColor: "#E4DFD0" }}>
+                  <div
+                    key={game.id}
+                    ref={(el) => { gameRefs.current[game.id] = el; }}
+                    className="rounded-lg border overflow-hidden"
+                    style={{ borderColor: "#E4DFD0" }}
+                  >
                     <button
                       onClick={() => toggleGameCollapse(game.id)}
                       className="w-full flex items-center justify-between p-3 text-left"
@@ -418,6 +426,19 @@ function MatchDayCard({ matchday, roster, formats, onUpdateMatchday, onDelete, C
                           </Button>
                           <Button variant="ghost" size="sm" icon={Repeat} onClick={() => regenerateGame(game.id)} COLORS={COLORS}>
                             Reshuffle
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            icon={Share2}
+                            onClick={() => exportElementAsImage(
+                              gameRefs.current[game.id],
+                              `matchday-${matchday.date}-game${gIdx + 1}.png`,
+                              flash
+                            )}
+                            COLORS={COLORS}
+                          >
+                            Share Image
                           </Button>
                         </div>
                       </div>
@@ -649,10 +670,12 @@ const FIELD_MAP = {
   ratings: { sessionId: "session_id", drillId: "drill_id" },
   players: { gamesPlayed: "games_played", positionCounts: "position_counts", rotationPointer: "rotation_pointer" },
   matchdays: { teamFilter: "team_filter", presentPlayerIds: "present_player_ids" },
-  theme_presets: { themeData: "theme_data" }
+  theme_presets: { themeData: "theme_data" },
+  calendar_settings: { trainingDays: "training_days", playingDays: "playing_days" }
 };
-const ROW_TABLES = ["drills", "methods", "sessions", "ratings", "players", "formats", "matchdays", "theme_presets"];
+const ROW_TABLES = ["drills", "methods", "sessions", "ratings", "players", "formats", "matchdays", "theme_presets", "calendar_settings"];
 const NAME_TABLES = ["categories", "teams", "session_themes"];
+const DEFAULT_CALENDAR_SETTINGS = { id: "default", trainingDays: [], playingDays: [], holidays: [] };
 
 function camelToSnake(str) {
   return str.replace(/[A-Z]/g, (m) => "_" + m.toLowerCase());
@@ -857,6 +880,7 @@ export default function App() {
   const [teams, setTeams] = useState([]);
   const [formats, setFormats] = useState([]);
   const [matchdays, setMatchdays] = useState([]);
+  const [calendarSettingsRows, setCalendarSettingsRows] = useState([]);
   
   // Theme state
   const [customThemes, setCustomThemes] = useState(BASE_THEMES);
@@ -877,11 +901,11 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      const [d, m, c, st, s, r, pl, tm, fm, md, tp] = await Promise.all([
+      const [d, m, c, st, s, r, pl, tm, fm, md, tp, cs] = await Promise.all([
         fetchTable("drills"), fetchTable("methods"), fetchTable("categories"),
         fetchTable("session_themes"), fetchTable("sessions"), fetchTable("ratings"), 
         fetchTable("players"), fetchTable("teams"), fetchTable("formats"), 
-        fetchTable("matchdays"), fetchTable("theme_presets")
+        fetchTable("matchdays"), fetchTable("theme_presets"), fetchTable("calendar_settings")
       ]);
 
       if ([d, m, c, s, r, pl, tm, fm, md].some((x) => x === null)) {
@@ -920,6 +944,13 @@ export default function App() {
       setFormats(finalFormats);
       setMatchdays(md);
 
+      if (cs && cs.length > 0) {
+        setCalendarSettingsRows(cs);
+      } else {
+        await seedTable("calendar_settings", [DEFAULT_CALENDAR_SETTINGS]);
+        setCalendarSettingsRows([DEFAULT_CALENDAR_SETTINGS]);
+      }
+
       if (tp && tp.length > 0) {
         const parsed = tp.map(item => typeof item.themeData === 'string' ? JSON.parse(item.themeData) : item.themeData);
         setCustomThemes([...BASE_THEMES, ...parsed.filter(p => !BASE_THEMES.some(b => b.id === p.id))]);
@@ -934,6 +965,7 @@ export default function App() {
       drills: setDrills, methods: setMethods, sessions: setSessions, ratings: setRatings,
       players: (v) => setPlayers(normalizePlayers(v)), formats: setFormats, matchdays: setMatchdays,
       categories: setCategories, session_themes: setSessionThemes, teams: (v) => setTeams(normalizeTeams(v)),
+      calendar_settings: setCalendarSettingsRows,
     };
     const channel = supabase.channel("session-sheet-changes");
     [...ROW_TABLES, ...NAME_TABLES].forEach((table) => {
@@ -953,6 +985,7 @@ export default function App() {
   const playersRef = useRefValue(players);
   const formatsRef = useRefValue(formats);
   const matchdaysRef = useRefValue(matchdays);
+  const calendarSettingsRef = useRefValue(calendarSettingsRows);
   const categoriesRef = useRefValue(categories);
   const sessionThemesRef = useRefValue(sessionThemes);
   const teamsRef = useRefValue(teams);
@@ -985,6 +1018,12 @@ export default function App() {
   const persistMatchdays = useCallback(async (next) => {
     setMatchdays(next);
     await syncRowTable("matchdays", matchdaysRef.current, next);
+  }, []);
+  const calendarSettings = calendarSettingsRows[0] || DEFAULT_CALENDAR_SETTINGS;
+  const persistCalendarSettings = useCallback(async (nextSettings) => {
+    const next = [{ ...nextSettings, id: "default" }];
+    setCalendarSettingsRows(next);
+    await syncRowTable("calendar_settings", calendarSettingsRef.current, next);
   }, []);
   const persistCategories = useCallback(async (next) => {
     setCategories(next);
@@ -1085,19 +1124,21 @@ export default function App() {
             sessionThemes={sessionThemes}
             sessions={sessions}
             persistSessions={persistSessions}
+            persistDrills={persistDrills}
+            ratings={ratings}
+            persistRatings={persistRatings}
             avgRating={avgRating}
             flash={flash}
             COLORS={COLORS}
           />
         )}
-        {tab === "history" && (
-          <HistoryTab
+        {tab === "calendar" && (
+          <CalendarTab
             sessions={sessions}
-            drills={drills}
-            persistSessions={persistSessions}
-            persistDrills={persistDrills}
-            ratings={ratings}
-            persistRatings={persistRatings}
+            matchdays={matchdays}
+            calendarSettings={calendarSettings}
+            persistCalendarSettings={persistCalendarSettings}
+            setTab={setTab}
             flash={flash}
             COLORS={COLORS}
           />
@@ -1167,10 +1208,10 @@ export default function App() {
 function Header({ tab, setTab, COLORS, customThemes, activeThemeId, setActiveThemeId, onOpenThemeModal }) {
   const tabs = [
     { id: "plan", label: "Plan Session", icon: ClipboardList },
-    { id: "history", label: "History", icon: Calendar },
     { id: "drills", label: "Drills & Themes", icon: Layers },
     { id: "methods", label: "Methods", icon: BookOpen },
     { id: "matchday", label: "Match Day", icon: Users },
+    { id: "calendar", label: "Calendar", icon: Calendar },
   ];
   return (
     <div style={{ background: COLORS.pitch }} className="relative px-4 sm:px-6 pt-5 pb-0 overflow-hidden transition-colors duration-300">
@@ -1252,7 +1293,86 @@ function getPool(resolvedCategory, theme, drillsByCategory) {
   return drillsByCategory[resolvedCategory] || [];
 }
 
-function PlanTab({ methods, drills, drillsByCategory, sessionThemes, sessions, persistSessions, avgRating, flash, COLORS }) {
+function SessionRow({ session, drills, ratings, onComplete, onDelete, onRate, isOpen, onToggle, flash, COLORS }) {
+  const exportRef = React.useRef(null);
+  const ratingFor = (drillId) =>
+    ratings.find((r) => r.sessionId === session.id && r.drillId === drillId)?.value || 0;
+
+  return (
+    <Card className="overflow-hidden mb-2">
+      <button onClick={onToggle} className="w-full flex items-center justify-between p-4 text-left">
+        <div className="flex items-center gap-3">
+          {isOpen ? <ChevronDown size={16} color={COLORS.inkSoft} /> : <ChevronRight size={16} color={COLORS.inkSoft} />}
+          <div>
+            <div className="text-sm font-bold" style={{ color: COLORS.ink, fontFamily: "Inter" }}>{session.date}</div>
+            <div className="text-xs" style={{ color: COLORS.inkSoft }}>
+              {session.methodName}{session.theme ? ` · ${session.theme}` : ""}
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {session.status === "completed" ? (
+            <Pill tone="pitch" COLORS={COLORS}>Completed</Pill>
+          ) : (
+            <Pill tone="amber" COLORS={COLORS}>Planned</Pill>
+          )}
+        </div>
+      </button>
+      {isOpen && (
+        <div className="px-4 pb-4">
+          <div ref={exportRef} className="p-1">
+            <div className="text-sm font-bold mb-2" style={{ color: COLORS.ink, fontFamily: "Inter" }}>
+              {session.date} — {session.methodName}{session.theme ? ` · ${session.theme}` : ""}
+            </div>
+            <div className="space-y-2 mb-3">
+              {session.phases.map((p, idx) => {
+                const drill = drills.find((d) => d.id === p.drillId);
+                const isFullGame = p.category === FULL_GAME;
+                return (
+                  <div key={p.phaseId || idx} className="rounded-lg p-2.5 flex items-center justify-between gap-3" style={{ background: COLORS.chalkDim }}>
+                    <div>
+                      <div className="text-xs font-bold uppercase tracking-wide" style={{ color: COLORS.inkSoft }}>{p.label}</div>
+                      <div className="text-sm font-semibold" style={{ color: COLORS.ink }}>
+                        {isFullGame ? "Free play" : drill?.name || "—"}
+                      </div>
+                    </div>
+                    {session.status === "completed" && drill && (
+                      <StarRating value={ratingFor(drill.id)} onChange={(v) => onRate(session, drill.id, v)} COLORS={COLORS} />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {session.notes && (
+              <p className="text-xs mb-3 italic" style={{ color: COLORS.inkSoft }}>"{session.notes}"</p>
+            )}
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            {session.status !== "completed" && (
+              <Button variant="dark" size="sm" icon={CheckCircle2} onClick={() => onComplete(session)} COLORS={COLORS}>
+                Mark complete
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={Share2}
+              onClick={() => exportElementAsImage(exportRef.current, `session-${session.date}.png`, flash)}
+              COLORS={COLORS}
+            >
+              Share Image
+            </Button>
+            <Button variant="danger" size="sm" icon={Trash2} onClick={() => onDelete(session.id)} COLORS={COLORS}>
+              Delete
+            </Button>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function PlanTab({ methods, drills, drillsByCategory, sessionThemes, sessions, persistSessions, persistDrills, ratings, persistRatings, avgRating, flash, COLORS }) {
   const [methodId, setMethodId] = useState(methods[0]?.id || "");
   const [theme, setTheme] = useState(sessionThemes[0] || "Shooting");
   const [date, setDate] = useState(todayStr());
@@ -1332,8 +1452,46 @@ function PlanTab({ methods, drills, drillsByCategory, sessionThemes, sessions, p
     setNotes("");
   };
 
+  const [expandedId, setExpandedId] = useState(null);
+  const [showHistory, setShowHistory] = useState(false);
+
+  const completeSession = async (session) => {
+    const nextDrills = drills.map((d) => {
+      const used = session.phases.some((p) => p.drillId === d.id);
+      return used ? { ...d, timesUsed: (d.timesUsed || 0) + 1 } : d;
+    });
+    await persistDrills(nextDrills);
+    const nextSessions = sessions.map((s) => (s.id === session.id ? { ...s, status: "completed" } : s));
+    await persistSessions(nextSessions);
+    flash("Marked complete — drill usage updated");
+    setExpandedId(session.id);
+  };
+
+  const deleteSession = async (id) => {
+    await persistSessions(sessions.filter((s) => s.id !== id));
+    flash("Session deleted");
+  };
+
+  const rateDrill = async (session, drillId, value) => {
+    const existing = ratings.find((r) => r.sessionId === session.id && r.drillId === drillId);
+    let next;
+    if (existing) {
+      next = ratings.map((r) => (r.id === existing.id ? { ...r, value } : r));
+    } else {
+      next = [...ratings, { id: uid(), sessionId: session.id, drillId, value, date: session.date }];
+    }
+    await persistRatings(next);
+  };
+
+  const upcomingSessions = sessions
+    .filter((s) => s.status !== "completed")
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const historySessions = sessions
+    .filter((s) => s.status === "completed")
+    .sort((a, b) => b.date.localeCompare(a.date));
+
   return (
-    <div className="grid lg:grid-cols-[1fr_320px] gap-5">
+    <div className="space-y-6">
       <div>
         <Card className="p-4 sm:p-5 mb-4">
           <div className="grid sm:grid-cols-2 gap-3 mb-3 items-end">
@@ -1475,145 +1633,330 @@ function PlanTab({ methods, drills, drillsByCategory, sessionThemes, sessions, p
       </div>
 
       <div>
-        <Card className="p-4 sm:p-5">
-          <div style={{ fontFamily: "Bebas Neue", color: COLORS.pitch, letterSpacing: 0.5 }} className="text-lg mb-3">
-            UPCOMING
-          </div>
-          {sessions.filter((s) => s.status === "planned").length === 0 && (
-            <p className="text-xs" style={{ color: COLORS.inkSoft }}>No planned sessions yet.</p>
-          )}
-          <div className="space-y-2">
-            {sessions
-              .filter((s) => s.status === "planned")
-              .sort((a, b) => a.date.localeCompare(b.date))
-              .slice(0, 6)
-              .map((s) => (
-                <div key={s.id} className="rounded-lg p-2.5" style={{ background: COLORS.chalkDim }}>
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-semibold" style={{ color: COLORS.ink }}>{s.date}</span>
-                    <Pill tone="pitch" COLORS={COLORS}>{s.methodName}</Pill>
-                  </div>
-                  <p className="text-xs mt-1" style={{ color: COLORS.inkSoft }}>
-                    {s.theme ? `Theme: ${s.theme} · ` : ""}{s.phases.map((p) => p.label).join(" → ")}
-                  </p>
-                </div>
-              ))}
-          </div>
-        </Card>
+        <div style={{ fontFamily: "Bebas Neue", color: COLORS.pitch, letterSpacing: 0.5 }} className="text-xl mb-3">
+          UPCOMING SESSIONS
+        </div>
+        {upcomingSessions.length === 0 && (
+          <Card className="p-6 text-center">
+            <p className="text-sm" style={{ color: COLORS.inkSoft }}>No planned sessions yet — build one above.</p>
+          </Card>
+        )}
+        {upcomingSessions.map((s) => (
+          <SessionRow
+            key={s.id}
+            session={s}
+            drills={drills}
+            ratings={ratings}
+            onComplete={completeSession}
+            onDelete={deleteSession}
+            onRate={rateDrill}
+            isOpen={expandedId === s.id}
+            onToggle={() => setExpandedId(expandedId === s.id ? null : s.id)}
+            flash={flash}
+            COLORS={COLORS}
+          />
+        ))}
       </div>
+
+      {historySessions.length > 0 && (
+        <div>
+          <button
+            onClick={() => setShowHistory(!showHistory)}
+            className="w-full flex items-center gap-2 p-3 rounded-lg"
+            style={{ background: COLORS.chalkDim }}
+          >
+            {showHistory ? <ChevronDown size={16} color={COLORS.inkSoft} /> : <ChevronRight size={16} color={COLORS.inkSoft} />}
+            <span style={{ fontFamily: "Bebas Neue", color: COLORS.pitch, letterSpacing: 0.5 }} className="text-lg">
+              HISTORY ({historySessions.length})
+            </span>
+          </button>
+          {showHistory && (
+            <div className="mt-3">
+              {historySessions.map((s) => (
+                <SessionRow
+                  key={s.id}
+                  session={s}
+                  drills={drills}
+                  ratings={ratings}
+                  onComplete={completeSession}
+                  onDelete={deleteSession}
+                  onRate={rateDrill}
+                  isOpen={expandedId === s.id}
+                  onToggle={() => setExpandedId(expandedId === s.id ? null : s.id)}
+                  flash={flash}
+                  COLORS={COLORS}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
-function HistoryTab({ sessions, drills, persistSessions, persistDrills, ratings, persistRatings, flash, COLORS }) {
-  const [expanded, setExpanded] = useState(null);
-  const sorted = [...sessions].sort((a, b) => b.date.localeCompare(a.date));
+// ---------- CALENDAR TAB ----------
+const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+// Internally weekday index follows JS's Date.getDay() (0=Sun..6=Sat) so it lines
+// up directly with date math; WEEKDAY_LABELS is just displayed Mon-first.
+const WEEKDAY_ORDER = [1, 2, 3, 4, 5, 6, 0];
 
-  const completeSession = async (session) => {
-    const nextDrills = drills.map((d) => {
-      const used = session.phases.some((p) => p.drillId === d.id);
-      return used ? { ...d, timesUsed: (d.timesUsed || 0) + 1 } : d;
-    });
-    await persistDrills(nextDrills);
-    const nextSessions = sessions.map((s) => (s.id === session.id ? { ...s, status: "completed" } : s));
-    await persistSessions(nextSessions);
-    flash("Marked complete — drill usage updated");
-    setExpanded(session.id);
-  };
+// Rasterizes a DOM node to a PNG and either opens the native share sheet
+// (so it can be saved straight to Photos on iPhone) or downloads it, whichever
+// the device/browser supports.
+async function exportElementAsImage(node, filename, flash) {
+  if (!node) return;
+  try {
+    const dataUrl = await toPng(node, { backgroundColor: "#ffffff", pixelRatio: 2, cacheBust: true });
+    const blob = await (await fetch(dataUrl)).blob();
+    const file = new File([blob], filename, { type: "image/png" });
 
-  const deleteSession = async (id) => {
-    await persistSessions(sessions.filter((s) => s.id !== id));
-    flash("Session deleted");
-  };
-
-  const rateDrill = async (session, drillId, value) => {
-    const existing = ratings.find((r) => r.sessionId === session.id && r.drillId === drillId);
-    let next;
-    if (existing) {
-      next = ratings.map((r) => (r.id === existing.id ? { ...r, value } : r));
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: filename });
     } else {
-      next = [...ratings, { id: uid(), sessionId: session.id, drillId, value, date: session.date }];
+      const link = document.createElement("a");
+      link.download = filename;
+      link.href = dataUrl;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      flash && flash("Image downloaded");
     }
-    await persistRatings(next);
+  } catch (e) {
+    flash && flash("Couldn't create the image — try again");
+  }
+}
+
+function ymd(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function CalendarTab({ sessions, matchdays, calendarSettings, persistCalendarSettings, setTab, flash, COLORS }) {
+  const [cursor, setCursor] = useState(() => {
+    const t = new Date();
+    return { year: t.getFullYear(), month: t.getMonth() };
+  });
+  const [selectedDate, setSelectedDate] = useState(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [newHoliday, setNewHoliday] = useState("");
+
+  const trainingDays = calendarSettings.trainingDays || [];
+  const playingDays = calendarSettings.playingDays || [];
+  const holidays = calendarSettings.holidays || [];
+
+  const toggleWeekday = (arrKey, day) => {
+    const current = calendarSettings[arrKey] || [];
+    const next = current.includes(day) ? current.filter((d) => d !== day) : [...current, day];
+    persistCalendarSettings({ ...calendarSettings, [arrKey]: next });
   };
 
-  const ratingFor = (session, drillId) =>
-    ratings.find((r) => r.sessionId === session.id && r.drillId === drillId)?.value || 0;
+  const addHoliday = () => {
+    if (!newHoliday) return;
+    if (holidays.includes(newHoliday)) return flash("Already marked as a holiday");
+    persistCalendarSettings({ ...calendarSettings, holidays: [...holidays, newHoliday].sort() });
+    setNewHoliday("");
+  };
+  const removeHoliday = (date) => {
+    persistCalendarSettings({ ...calendarSettings, holidays: holidays.filter((h) => h !== date) });
+  };
 
-  if (!sorted.length) {
-    return (
-      <Card className="p-8 text-center">
-        <p className="text-sm" style={{ color: COLORS.inkSoft }}>No sessions yet — plan one in the Plan Session tab.</p>
-      </Card>
-    );
-  }
+  const sessionsByDate = useMemo(() => {
+    const map = {};
+    sessions.forEach((s) => { (map[s.date] = map[s.date] || []).push(s); });
+    return map;
+  }, [sessions]);
+  const matchdaysByDate = useMemo(() => {
+    const map = {};
+    matchdays.forEach((m) => { (map[m.date] = map[m.date] || []).push(m); });
+    return map;
+  }, [matchdays]);
+
+  const firstOfMonth = new Date(cursor.year, cursor.month, 1);
+  const startWeekday = (firstOfMonth.getDay() + 6) % 7; // 0=Mon
+  const daysInMonth = new Date(cursor.year, cursor.month + 1, 0).getDate();
+  const cells = [];
+  for (let i = 0; i < startWeekday; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(new Date(cursor.year, cursor.month, d));
+
+  const monthLabel = firstOfMonth.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  const changeMonth = (delta) => {
+    const d = new Date(cursor.year, cursor.month + delta, 1);
+    setCursor({ year: d.getFullYear(), month: d.getMonth() });
+    setSelectedDate(null);
+  };
+
+  const today = todayStr();
+  const selectedSessions = selectedDate ? (sessionsByDate[selectedDate] || []) : [];
+  const selectedMatchdays = selectedDate ? (matchdaysByDate[selectedDate] || []) : [];
 
   return (
-    <div className="space-y-3">
-      {sorted.map((s) => {
-        const isOpen = expanded === s.id;
-        return (
-          <Card key={s.id} className="overflow-hidden">
-            <button
-              onClick={() => setExpanded(isOpen ? null : s.id)}
-              className="w-full flex items-center justify-between p-4 text-left"
-            >
-              <div className="flex items-center gap-3">
-                {isOpen ? <ChevronDown size={16} color={COLORS.inkSoft} /> : <ChevronRight size={16} color={COLORS.inkSoft} />}
-                <div>
-                  <div className="text-sm font-bold" style={{ color: COLORS.ink, fontFamily: "Inter" }}>{s.date}</div>
-                  <div className="text-xs" style={{ color: COLORS.inkSoft }}>
-                    {s.methodName}{s.theme ? ` · ${s.theme}` : ""}
-                  </div>
-                </div>
+    <div className="space-y-5">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-2">
+          <Button variant="subtle" size="sm" icon={ChevronLeft} onClick={() => changeMonth(-1)} COLORS={COLORS} />
+          <div style={{ fontFamily: "Bebas Neue", color: COLORS.pitch, letterSpacing: 0.5 }} className="text-2xl min-w-[180px] text-center">
+            {monthLabel.toUpperCase()}
+          </div>
+          <Button variant="subtle" size="sm" icon={ChevronRight} onClick={() => changeMonth(1)} COLORS={COLORS} />
+        </div>
+        <Button variant="ghost" size="sm" onClick={() => setShowSettings(!showSettings)} COLORS={COLORS}>
+          {showSettings ? "Hide" : "Set training/playing days & holidays"}
+        </Button>
+      </div>
+
+      {showSettings && (
+        <Card className="p-4 sm:p-5">
+          <div className="grid sm:grid-cols-2 gap-4 mb-4">
+            <div>
+              <Label COLORS={COLORS}>Training days</Label>
+              <div className="flex flex-wrap gap-1.5">
+                {WEEKDAY_ORDER.map((day, i) => (
+                  <button
+                    key={day}
+                    onClick={() => toggleWeekday("trainingDays", day)}
+                    className="px-3 py-1.5 text-xs font-bold rounded-full"
+                    style={{
+                      background: trainingDays.includes(day) ? COLORS.pitchLight : COLORS.chalkDim,
+                      color: trainingDays.includes(day) ? "#fff" : COLORS.ink,
+                    }}
+                  >
+                    {WEEKDAY_LABELS[i]}
+                  </button>
+                ))}
               </div>
-              <div className="flex items-center gap-2">
-                {s.status === "completed" ? (
-                  <Pill tone="pitch" COLORS={COLORS}>Completed</Pill>
-                ) : (
-                  <Pill tone="amber" COLORS={COLORS}>Planned</Pill>
-                )}
+            </div>
+            <div>
+              <Label COLORS={COLORS}>Playing days</Label>
+              <div className="flex flex-wrap gap-1.5">
+                {WEEKDAY_ORDER.map((day, i) => (
+                  <button
+                    key={day}
+                    onClick={() => toggleWeekday("playingDays", day)}
+                    className="px-3 py-1.5 text-xs font-bold rounded-full"
+                    style={{
+                      background: playingDays.includes(day) ? COLORS.amber : COLORS.chalkDim,
+                      color: COLORS.ink,
+                    }}
+                  >
+                    {WEEKDAY_LABELS[i]}
+                  </button>
+                ))}
               </div>
-            </button>
-            {isOpen && (
-              <div className="px-4 pb-4">
-                <div className="space-y-2 mb-3">
-                  {s.phases.map((p, idx) => {
-                    const drill = drills.find((d) => d.id === p.drillId);
-                    const isFullGame = p.category === FULL_GAME;
-                    return (
-                      <div key={p.phaseId || idx} className="rounded-lg p-2.5 flex items-center justify-between gap-3" style={{ background: COLORS.chalkDim }}>
-                        <div>
-                          <div className="text-xs font-bold uppercase tracking-wide" style={{ color: COLORS.inkSoft }}>{p.label}</div>
-                          <div className="text-sm font-semibold" style={{ color: COLORS.ink }}>
-                            {isFullGame ? "Free play" : drill?.name || "—"}
-                          </div>
-                        </div>
-                        {s.status === "completed" && drill && (
-                          <StarRating value={ratingFor(s, drill.id)} onChange={(v) => rateDrill(s, drill.id, v)} COLORS={COLORS} />
-                        )}
-                      </div>
-                    );
-                  })}
+            </div>
+          </div>
+          <Label COLORS={COLORS}>Holidays / blocked-out dates</Label>
+          <div className="flex gap-2 mb-2">
+            <div className="max-w-[170px]">
+              <TextInput type="date" value={newHoliday} onChange={(e) => setNewHoliday(e.target.value)} COLORS={COLORS} />
+            </div>
+            <Button variant="dark" size="sm" icon={Plus} onClick={addHoliday} COLORS={COLORS}>Add</Button>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {holidays.map((h) => (
+              <div key={h} className="flex items-center gap-1 pl-2.5 pr-1.5 py-1 rounded-full" style={{ background: COLORS.chalkDim }}>
+                <span className="text-xs font-semibold" style={{ color: COLORS.ink }}>{h}</span>
+                <button onClick={() => removeHoliday(h)}><X size={12} color={COLORS.inkSoft} /></button>
+              </div>
+            ))}
+            {holidays.length === 0 && <p className="text-xs" style={{ color: COLORS.inkSoft }}>No holidays added yet.</p>}
+          </div>
+        </Card>
+      )}
+
+      <div className="flex items-center gap-4 flex-wrap text-xs" style={{ color: COLORS.inkSoft }}>
+        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full" style={{ background: COLORS.pitchLight }} /> Training day</span>
+        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full" style={{ background: COLORS.amber }} /> Playing day</span>
+        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full" style={{ background: "#ccc" }} /> Holiday</span>
+        <span className="flex items-center gap-1.5"><ClipboardList size={13} /> Session scheduled</span>
+        <span className="flex items-center gap-1.5"><Users size={13} /> Match day scheduled</span>
+      </div>
+
+      <Card className="p-3 sm:p-4">
+        <div className="grid grid-cols-7 gap-1 mb-1">
+          {WEEKDAY_LABELS.map((w) => (
+            <div key={w} className="text-center text-[11px] font-bold uppercase" style={{ color: COLORS.inkSoft }}>{w}</div>
+          ))}
+        </div>
+        <div className="grid grid-cols-7 gap-1">
+          {cells.map((d, idx) => {
+            if (!d) return <div key={idx} />;
+            const dateStr = ymd(d);
+            const weekday = d.getDay();
+            const isHoliday = holidays.includes(dateStr);
+            const isTraining = !isHoliday && trainingDays.includes(weekday);
+            const isPlaying = !isHoliday && playingDays.includes(weekday);
+            const daySessions = sessionsByDate[dateStr] || [];
+            const dayMatchdays = matchdaysByDate[dateStr] || [];
+            const isToday = dateStr === today;
+            const isSelected = dateStr === selectedDate;
+
+            let bg = "#fff";
+            if (isHoliday) bg = "#EDEDED";
+            else if (isTraining && isPlaying) bg = `linear-gradient(135deg, ${hexToRgba(COLORS.pitchLight, 0.18)} 50%, ${hexToRgba(COLORS.amber, 0.22)} 50%)`;
+            else if (isTraining) bg = hexToRgba(COLORS.pitchLight, 0.14);
+            else if (isPlaying) bg = hexToRgba(COLORS.amber, 0.16);
+
+            return (
+              <button
+                key={idx}
+                onClick={() => setSelectedDate(isSelected ? null : dateStr)}
+                className="rounded-lg p-1.5 text-left min-h-[62px] relative"
+                style={{
+                  background: bg,
+                  border: isSelected ? `2px solid ${COLORS.pitch}` : isToday ? `1.5px solid ${COLORS.amber}` : "1px solid transparent",
+                }}
+              >
+                <div className="text-xs font-bold" style={{ color: isHoliday ? "#999" : COLORS.ink }}>{d.getDate()}</div>
+                <div className="flex items-center gap-1 mt-1 flex-wrap">
+                  {daySessions.length > 0 && <ClipboardList size={12} color={COLORS.pitch} />}
+                  {dayMatchdays.length > 0 && <Users size={12} color={COLORS.amberDeep || COLORS.pitch} />}
                 </div>
-                {s.notes && (
-                  <p className="text-xs mb-3 italic" style={{ color: COLORS.inkSoft }}>"{s.notes}"</p>
-                )}
+              </button>
+            );
+          })}
+        </div>
+      </Card>
+
+      {selectedDate && (
+        <Card className="p-4 sm:p-5">
+          <div style={{ fontFamily: "Bebas Neue", color: COLORS.pitch, letterSpacing: 0.5 }} className="text-lg mb-3">
+            {selectedDate}
+          </div>
+          {selectedSessions.length === 0 && selectedMatchdays.length === 0 && (
+            <p className="text-sm" style={{ color: COLORS.inkSoft }}>Nothing scheduled on this day.</p>
+          )}
+          <div className="space-y-2">
+            {selectedSessions.map((s) => (
+              <div key={s.id} className="flex items-center justify-between rounded-lg p-2.5" style={{ background: COLORS.chalkDim }}>
                 <div className="flex items-center gap-2">
-                  {s.status !== "completed" && (
-                    <Button variant="dark" size="sm" icon={CheckCircle2} onClick={() => completeSession(s)} COLORS={COLORS}>
-                      Mark complete
-                    </Button>
-                  )}
-                  <Button variant="danger" size="sm" icon={Trash2} onClick={() => deleteSession(s.id)} COLORS={COLORS}>
-                    Delete
-                  </Button>
+                  <ClipboardList size={15} color={COLORS.pitch} />
+                  <span className="text-sm font-semibold" style={{ color: COLORS.ink }}>
+                    {s.methodName}{s.theme ? ` · ${s.theme}` : ""}
+                  </span>
+                  <Pill tone={s.status === "completed" ? "pitch" : "amber"} COLORS={COLORS}>
+                    {s.status === "completed" ? "Completed" : "Planned"}
+                  </Pill>
                 </div>
+                <Button variant="ghost" size="sm" onClick={() => setTab("plan")} COLORS={COLORS}>Open</Button>
               </div>
-            )}
-          </Card>
-        );
-      })}
+            ))}
+            {selectedMatchdays.map((md) => (
+              <div key={md.id} className="flex items-center justify-between rounded-lg p-2.5" style={{ background: COLORS.chalkDim }}>
+                <div className="flex items-center gap-2">
+                  <Users size={15} color={COLORS.pitch} />
+                  <span className="text-sm font-semibold" style={{ color: COLORS.ink }}>
+                    {(md.games || []).length} game{(md.games || []).length === 1 ? "" : "s"} · {(md.presentPlayerIds || []).length} present
+                  </span>
+                </div>
+                <Button variant="ghost" size="sm" onClick={() => setTab("matchday")} COLORS={COLORS}>Open</Button>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
     </div>
   );
 }
@@ -2663,6 +3006,7 @@ function MatchDaysView({ players, teams, formats, matchdays, persistPlayers, per
             formats={formats}
             onUpdateMatchday={handleUpdateMatchday}
             onDelete={() => deleteMatchDay(md.id)}
+            flash={flash}
             COLORS={COLORS}
           />
         ))}
@@ -2695,6 +3039,7 @@ function MatchDaysView({ players, teams, formats, matchdays, persistPlayers, per
                   formats={formats}
                   onUpdateMatchday={handleUpdateMatchday}
                   onDelete={() => deleteMatchDay(md.id)}
+                  flash={flash}
                   COLORS={COLORS}
                 />
               ))}
