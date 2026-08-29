@@ -716,11 +716,13 @@ async function fetchTable(table) {
 async function seedTable(table, rows) {
   if (NAME_TABLES.includes(table)) {
     if (!rows.length) return;
-    await supabase.from(table).upsert(rows.map((name) => ({ name })));
+    const { error } = await supabase.from(table).upsert(rows.map((name) => ({ name })));
+    if (error) console.error(`seedTable(${table}) failed:`, error.message);
     return;
   }
   if (!rows.length) return;
-  await supabase.from(table).upsert(rows.map((r) => toRow(table, r)));
+  const { error } = await supabase.from(table).upsert(rows.map((r) => toRow(table, r)));
+  if (error) console.error(`seedTable(${table}) failed:`, error.message);
 }
 
 async function syncRowTable(table, prevList, nextList) {
@@ -728,20 +730,24 @@ async function syncRowTable(table, prevList, nextList) {
   const nextIds = new Set(nextList.map((x) => x.id));
   const toDelete = prevList.filter((x) => !nextIds.has(x.id)).map((x) => x.id);
   if (toDelete.length) {
-    await supabase.from(table).delete().in("id", toDelete);
+    const { error } = await supabase.from(table).delete().in("id", toDelete);
+    if (error) console.error(`syncRowTable(${table}) delete failed:`, error.message);
   }
   if (nextList.length) {
-    await supabase.from(table).upsert(nextList.map((r) => toRow(table, r)));
+    const { error } = await supabase.from(table).upsert(nextList.map((r) => toRow(table, r)));
+    if (error) console.error(`syncRowTable(${table}) upsert failed:`, error.message);
   }
 }
 async function syncNameTable(table, prevList, nextList) {
   const nextSet = new Set(nextList);
   const toDelete = prevList.filter((x) => !nextSet.has(x));
   if (toDelete.length) {
-    await supabase.from(table).delete().in("name", toDelete);
+    const { error } = await supabase.from(table).delete().in("name", toDelete);
+    if (error) console.error(`syncNameTable(${table}) delete failed:`, error.message);
   }
   if (nextList.length) {
-    await supabase.from(table).upsert(nextList.map((name) => ({ name })));
+    const { error } = await supabase.from(table).upsert(nextList.map((name) => ({ name })));
+    if (error) console.error(`syncNameTable(${table}) upsert failed:`, error.message);
   }
 }
 
@@ -881,6 +887,7 @@ export default function App() {
   const [formats, setFormats] = useState([]);
   const [matchdays, setMatchdays] = useState([]);
   const [calendarSettingsRows, setCalendarSettingsRows] = useState([]);
+  const [calendarTableMissing, setCalendarTableMissing] = useState(false);
   
   // Theme state
   const [customThemes, setCustomThemes] = useState(BASE_THEMES);
@@ -944,7 +951,14 @@ export default function App() {
       setFormats(finalFormats);
       setMatchdays(md);
 
-      if (cs && cs.length > 0) {
+      if (cs === null) {
+        // The calendar_settings table itself couldn't be reached — most likely
+        // the migration SQL hasn't been run yet. Don't try to seed (that would
+        // just fail too); fall back to in-memory defaults and flag it clearly
+        // rather than silently resetting settings on every reload.
+        setCalendarTableMissing(true);
+        setCalendarSettingsRows([DEFAULT_CALENDAR_SETTINGS]);
+      } else if (cs.length > 0) {
         setCalendarSettingsRows(cs);
       } else {
         await seedTable("calendar_settings", [DEFAULT_CALENDAR_SETTINGS]);
@@ -1139,6 +1153,7 @@ export default function App() {
             matchdays={matchdays}
             calendarSettings={calendarSettings}
             persistCalendarSettings={persistCalendarSettings}
+            calendarTableMissing={calendarTableMissing}
             setTab={setTab}
             flash={flash}
             COLORS={COLORS}
@@ -1745,7 +1760,7 @@ function ymd(d) {
   return `${y}-${m}-${day}`;
 }
 
-function CalendarTab({ sessions, matchdays, calendarSettings, persistCalendarSettings, setTab, flash, COLORS }) {
+function CalendarTab({ sessions, matchdays, calendarSettings, persistCalendarSettings, calendarTableMissing, setTab, flash, COLORS }) {
   const [cursor, setCursor] = useState(() => {
     const t = new Date();
     return { year: t.getFullYear(), month: t.getMonth() };
@@ -1804,6 +1819,13 @@ function CalendarTab({ sessions, matchdays, calendarSettings, persistCalendarSet
 
   return (
     <div className="space-y-5">
+      {calendarTableMissing && (
+        <div className="rounded-lg px-4 py-3 text-sm font-semibold" style={{ background: "#FBE9C8", color: COLORS.amberDeep }}>
+          Holidays, training/playing days, and tab order aren't saving — the <code>calendar_settings</code> table
+          couldn't be reached in Supabase. Run <code>calendar_settings_migration.sql</code> in the Supabase SQL Editor,
+          then reload this page.
+        </div>
+      )}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-2">
           <Button variant="subtle" size="sm" icon={ChevronLeft} onClick={() => changeMonth(-1)} COLORS={COLORS} />
