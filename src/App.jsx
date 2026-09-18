@@ -239,6 +239,9 @@ function computeMatchdayFairness(matchday, roster) {
 // --- MATCHDAY CARD COMPONENT ---
 function MatchDayCard({ matchday, roster, formats, onUpdateMatchday, onDelete, flash, COLORS = DEFAULT_THEME.colors }) {
   const gameRefs = React.useRef({});
+  const allGamesRef = React.useRef(null);
+  const [exportingAll, setExportingAll] = useState(false);
+  const [showFairness, setShowFairness] = useState(false);
   const [numGamesToAdd, setNumGamesToAdd] = useState(1);
   const [selectedFormatId, setSelectedFormatId] = useState(formats[0]?.id || '');
   const [opponent, setOpponent] = useState('');
@@ -280,6 +283,73 @@ function MatchDayCard({ matchday, roster, formats, onUpdateMatchday, onDelete, f
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [matchday]);
+
+  const [swapPick, setSwapPick] = useState(null); // { gameId, intervalIndex, playerId }
+
+  const swapPlayersInInterval = (game, intervalIndex, idA, idB) => {
+    const interval = game.intervals[intervalIndex];
+    const onFieldA = interval.onField.find((o) => o.playerId === idA);
+    const onFieldB = interval.onField.find((o) => o.playerId === idB);
+
+    if (!onFieldA && !onFieldB) {
+      flash("Pick at least one player who's on the pitch to swap");
+      return game;
+    }
+
+    let nextOnField = [...interval.onField];
+    let nextBenched = [...interval.benched];
+
+    if (onFieldA && onFieldB) {
+      // Both on the pitch — just swap their positions.
+      nextOnField = nextOnField.map((o) => {
+        if (o.playerId === idA) return { ...o, position: onFieldB.position };
+        if (o.playerId === idB) return { ...o, position: onFieldA.position };
+        return o;
+      });
+    } else {
+      // One on the pitch, one on the bench — the bench player takes the
+      // pitch player's spot and vice versa.
+      const onPitchId = onFieldA ? idA : idB;
+      const onBenchId = onFieldA ? idB : idA;
+      const vacatedPosition = (onFieldA || onFieldB).position;
+      nextOnField = nextOnField
+        .filter((o) => o.playerId !== onPitchId)
+        .concat([{ playerId: onBenchId, position: vacatedPosition }]);
+      nextBenched = nextBenched.filter((id) => id !== onBenchId).concat([onPitchId]);
+    }
+
+    const nextIntervals = game.intervals.map((iv, idx) =>
+      idx === intervalIndex ? { ...iv, onField: nextOnField, benched: nextBenched } : iv
+    );
+    return { ...game, intervals: nextIntervals };
+  };
+
+  const handlePlayerClick = (gameId, intervalIndex, playerId) => {
+    if (!swapPick || swapPick.gameId !== gameId || swapPick.intervalIndex !== intervalIndex) {
+      setSwapPick({ gameId, intervalIndex, playerId });
+      return;
+    }
+    if (swapPick.playerId === playerId) {
+      setSwapPick(null);
+      return;
+    }
+    const game = matchday.games.find((g) => g.id === gameId);
+    const updatedGame = swapPlayersInInterval(game, intervalIndex, swapPick.playerId, playerId);
+    onUpdateMatchday({ ...matchday, games: matchday.games.map((g) => (g.id === gameId ? updatedGame : g)) });
+    setSwapPick(null);
+  };
+
+  const shareAllGames = async () => {
+    // Temporarily expand every game (any that were individually collapsed)
+    // so the exported image shows every schedule, then restore how they were.
+    const prevCollapsed = collapsedGames;
+    setCollapsedGames({});
+    setExportingAll(true);
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await exportElementAsImage(allGamesRef.current, `matchday-${matchday.date}-all-games.png`, flash);
+    setCollapsedGames(prevCollapsed);
+    setExportingAll(false);
+  };
 
   const addGames = () => {
     const fmt = formats.find((f) => f.id === selectedFormatId) || formats[0];
@@ -425,10 +495,17 @@ function MatchDayCard({ matchday, roster, formats, onUpdateMatchday, onDelete, f
           </div>
 
           <div>
-            <div className="text-xs font-bold uppercase tracking-wide mb-2" style={{ color: COLORS.inkSoft }}>
-              Schedule ({(matchday.games || []).length} games)
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-xs font-bold uppercase tracking-wide" style={{ color: COLORS.inkSoft }}>
+                Schedule ({(matchday.games || []).length} games)
+              </div>
+              {(matchday.games || []).length > 0 && (
+                <Button variant="ghost" size="sm" icon={Share2} onClick={shareAllGames} disabled={exportingAll} COLORS={COLORS}>
+                  {exportingAll ? "Preparing…" : "Share Match Day"}
+                </Button>
+              )}
             </div>
-            <div className="space-y-2">
+            <div className="space-y-2" ref={allGamesRef}>
               {(matchday.games || []).map((game, gIdx) => {
                 const isCollapsed = collapsedGames[game.id];
                 return (
@@ -457,21 +534,56 @@ function MatchDayCard({ matchday, roster, formats, onUpdateMatchday, onDelete, f
 
                     {!isCollapsed && (
                       <div className="p-3 pt-0">
+                        <p className="text-[11px] mb-1.5" style={{ color: COLORS.inkSoft }}>
+                          Tap a player, then tap another in the same row to swap them (works between pitch and bench too).
+                        </p>
                         <div className="space-y-1.5 mb-3">
-                          {game.intervals.map((iv) => (
+                          {game.intervals.map((iv, intervalIndex) => (
                             <div key={iv.index} className="text-xs rounded-md px-2 py-1.5" style={{ background: COLORS.chalkDim }}>
                               <span className="font-mono font-semibold" style={{ color: COLORS.inkSoft, fontFamily: "JetBrains Mono" }}>
                                 {fmtTime(iv.startMin)}–{fmtTime(iv.endMin)}
                               </span>
-                              <span className="ml-2" style={{ color: COLORS.ink }}>
+                              <span className="ml-2 inline-flex flex-wrap gap-1 align-middle">
                                 {iv.onField.map((of) => {
                                   const p = roster.find((r) => r.id === of.playerId);
-                                  return `${p?.name || "?"} (${of.position})`;
-                                }).join(", ")}
+                                  const isPicked = swapPick && swapPick.gameId === game.id && swapPick.intervalIndex === intervalIndex && swapPick.playerId === of.playerId;
+                                  return (
+                                    <button
+                                      key={of.playerId}
+                                      onClick={() => handlePlayerClick(game.id, intervalIndex, of.playerId)}
+                                      className="px-1.5 py-0.5 rounded font-semibold"
+                                      style={{
+                                        background: isPicked ? COLORS.amber : "transparent",
+                                        color: COLORS.ink,
+                                        border: isPicked ? `1px solid ${COLORS.amber}` : "1px solid transparent",
+                                      }}
+                                    >
+                                      {p?.name || "?"} ({of.position})
+                                    </button>
+                                  );
+                                })}
                               </span>
                               {iv.benched.length > 0 && (
-                                <span className="ml-2 italic" style={{ color: COLORS.inkSoft }}>
-                                  — bench: {iv.benched.map((bId) => roster.find((r) => r.id === bId)?.name || "?").join(", ")}
+                                <span className="ml-2 italic inline-flex flex-wrap gap-1 align-middle">
+                                  — bench:
+                                  {iv.benched.map((bId) => {
+                                    const p = roster.find((r) => r.id === bId);
+                                    const isPicked = swapPick && swapPick.gameId === game.id && swapPick.intervalIndex === intervalIndex && swapPick.playerId === bId;
+                                    return (
+                                      <button
+                                        key={bId}
+                                        onClick={() => handlePlayerClick(game.id, intervalIndex, bId)}
+                                        className="px-1.5 py-0.5 rounded"
+                                        style={{
+                                          background: isPicked ? COLORS.amber : "transparent",
+                                          color: COLORS.inkSoft,
+                                          border: isPicked ? `1px solid ${COLORS.amber}` : "1px solid transparent",
+                                        }}
+                                      >
+                                        {p?.name || "?"}
+                                      </button>
+                                    );
+                                  })}
                                 </span>
                               )}
                             </div>
@@ -517,10 +629,17 @@ function MatchDayCard({ matchday, roster, formats, onUpdateMatchday, onDelete, f
 
           {(matchday.games || []).length > 0 && (
             <div className="rounded-lg border p-3" style={{ borderColor: "#E4DFD0" }}>
-              <div className="text-xs font-bold uppercase tracking-wide mb-2" style={{ color: COLORS.inkSoft }}>
-                Fairness Check
-              </div>
-              <div className="overflow-x-auto">
+              <button
+                onClick={() => setShowFairness(!showFairness)}
+                className="w-full flex items-center justify-between"
+              >
+                <div className="text-xs font-bold uppercase tracking-wide" style={{ color: COLORS.inkSoft }}>
+                  Fairness Check
+                </div>
+                {showFairness ? <ChevronDown size={14} color={COLORS.inkSoft} /> : <ChevronRight size={14} color={COLORS.inkSoft} />}
+              </button>
+              {showFairness && (
+              <div className="overflow-x-auto mt-2">
                 <table className="w-full text-xs" style={{ color: COLORS.ink }}>
                   <thead>
                     <tr style={{ color: COLORS.inkSoft }}>
@@ -548,6 +667,7 @@ function MatchDayCard({ matchday, roster, formats, onUpdateMatchday, onDelete, f
                   </tbody>
                 </table>
               </div>
+              )}
             </div>
           )}
 
@@ -2157,6 +2277,40 @@ function DrillsTab({ drills, categories, sessionThemes, sessions, persistDrills,
     flash("Drill removed");
   };
 
+  const [showBulkImport, setShowBulkImport] = useState(false);
+  const [bulkText, setBulkText] = useState("");
+
+  const importBulkDrills = async () => {
+    const lines = bulkText.split("\n").map((l) => l.trim()).filter(Boolean);
+    if (!lines.length) return flash("Paste at least one line to import");
+    const newDrills = [];
+    let skipped = 0;
+    lines.forEach((line) => {
+      const parts = line.split(",").map((p) => p.trim());
+      const [lName, lCategory, lTheme, ...rest] = parts;
+      const lDescription = rest.join(",").trim();
+      if (!lName || !lCategory || !categories.includes(lCategory)) {
+        skipped += 1;
+        return;
+      }
+      newDrills.push({
+        id: uid(),
+        name: lName,
+        category: lCategory,
+        theme: lCategory === CONDITIONAL_GAME ? (lTheme || "") : "",
+        description: lDescription || "",
+        timesUsed: 0,
+      });
+    });
+    if (newDrills.length) await persistDrills([...newDrills, ...drills]);
+    flash(
+      skipped
+        ? `Imported ${newDrills.length} — skipped ${skipped} (name/category missing or category doesn't match exactly)`
+        : `Imported ${newDrills.length} drill${newDrills.length === 1 ? "" : "s"}`
+    );
+    setBulkText("");
+  };
+
   const addCategory = async () => {
     const c = newCategory.trim();
     if (!c) return;
@@ -2252,7 +2406,35 @@ function DrillsTab({ drills, categories, sessionThemes, sessions, persistDrills,
           </div>
         </Card>
 
-        {/* Drill Category Management */}
+        {/* Bulk drill import */}
+        <Card className="p-4">
+          <button
+            onClick={() => setShowBulkImport(!showBulkImport)}
+            className="w-full flex items-center justify-between"
+          >
+            <div style={{ fontFamily: "Bebas Neue", color: COLORS.pitch }} className="text-lg">BULK IMPORT</div>
+            {showBulkImport ? <ChevronDown size={16} color={COLORS.inkSoft} /> : <ChevronRight size={16} color={COLORS.inkSoft} />}
+          </button>
+          {showBulkImport && (
+            <div className="mt-3 space-y-2">
+              <p className="text-xs" style={{ color: COLORS.inkSoft }}>
+                One drill per line: <code>Name, Category, Theme, Description</code> — Theme and Description are optional.
+                Category must match one of your existing categories exactly ({categories.join(", ")}).
+              </p>
+              <textarea
+                value={bulkText}
+                onChange={(e) => setBulkText(e.target.value)}
+                rows={6}
+                placeholder={"Cone Weave, Dribbling\nPassing Triangles, Passing, , Three cones in a triangle, one-touch passing"}
+                className="w-full text-xs font-mono rounded-lg px-2.5 py-2 border outline-none resize-none"
+                style={{ borderColor: "#D9D3C1" }}
+              />
+              <Button variant="primary" icon={Plus} onClick={importBulkDrills} COLORS={COLORS}>Import drills</Button>
+            </div>
+          )}
+        </Card>
+
+
         <Card className="p-4">
           <div style={{ fontFamily: "Bebas Neue", color: COLORS.pitch }} className="text-lg mb-3">CATEGORIES</div>
           <div className="flex flex-wrap gap-1.5 mb-3 max-h-40 overflow-y-auto">
