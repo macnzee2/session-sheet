@@ -16,163 +16,224 @@ const FONT_IMPORT = `@import url('https://fonts.googleapis.com/css2?family=Bebas
 // exact spot vacated by whoever they're replacing (which naturally reproduces
 // "swap as a pair" behaviour when bench size is 2, and "swap one at a time"
 // when bench size is 1 — without hard-coding either case).
-function generateRotationPlan(presentPlayers, formatPositions, duration, subInterval, existingMatchdayGames = []) {
+// Formats a decimal minute value as m:ss (3.333 -> "3:20")
+function fmtTime(mins) {
+  const total = Math.round(mins * 60);
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+// Suggests how many rotation blocks divide the squad evenly. With 6 players and
+// 2 bench slots that's 3 blocks (everyone sits exactly once); with 5 players and
+// 1 bench slot it's 5 blocks. Falls back sensibly when it doesn't divide cleanly.
+function suggestedBlocks(numPlayers, numPositions) {
+  const bench = numPlayers - numPositions;
+  if (bench <= 0) return 1;
+  return Math.max(1, Math.round(numPlayers / bench));
+}
+
+// ROTATION ENGINE
+//
+// Selection priority, in order:
+//   1. Bench starts  — whoever has started the most games on the bench today is
+//      first in line to start the next one on the pitch. This is the PRIMARY
+//      rule, not a tie-breaker, which is what stops the same kids opening on the
+//      bench in back-to-back games.
+//   2. Striker starts — among those starting, the ST shirt goes to whoever has
+//      started fewest games up front today.
+//   3. Minutes       — only a loose balancer for ties, deliberately last. Chasing
+//      exact minute-equality was causing more churn than it was worth.
+//
+// Fairness is scoped to a single match day on purpose: squads are drawn from a
+// large pool week to week, so carrying history across days would unfairly
+// penalise the kids who turn up every week.
+function generateRotationPlan(presentPlayers, formatPositions, duration, numBlocks, existingMatchdayGames = []) {
   const requiredPositions = formatPositions || [];
   const P = requiredPositions.length;
   const N = presentPlayers.length;
-  if (N < P || P === 0) return null; // Need at least enough players to fill the pitch
+  if (N < P || P === 0) return null;
 
   const g = N - P; // bench size at any moment
-  const numIntervals = g <= 0 ? 1 : Math.max(1, Math.ceil(duration / subInterval));
+  const blocks = g <= 0 ? 1 : Math.max(1, Math.round(numBlocks) || 1);
+  const blockLength = duration / blocks;
 
-  // ---- Fairness history from earlier games THIS match day ----
-  const priorMinutes = {};
-  const priorPositionCount = {};
-  const timesStartedBenchToday = {};
+  // ---- History from earlier games THIS match day ----
+  const minutes = {};
+  const positionCount = {};
+  const benchStarts = {};
+  const strikerStarts = {};
   presentPlayers.forEach((p) => {
-    priorMinutes[p.id] = 0;
-    priorPositionCount[p.id] = {};
-    timesStartedBenchToday[p.id] = 0;
+    minutes[p.id] = 0;
+    positionCount[p.id] = {};
+    benchStarts[p.id] = 0;
+    strikerStarts[p.id] = 0;
   });
+
+  const isStriker = (pos) => pos === "ST" || pos === "CF";
+
   existingMatchdayGames.forEach((game) => {
     (game.intervals || []).forEach((iv, ivIdx) => {
       const mins = (iv.endMin ?? 0) - (iv.startMin ?? 0);
       (iv.onField || []).forEach((of) => {
-        if (priorMinutes[of.playerId] === undefined) return; // wasn't present today
-        priorMinutes[of.playerId] += mins;
-        priorPositionCount[of.playerId][of.position] = (priorPositionCount[of.playerId][of.position] || 0) + 1;
+        if (minutes[of.playerId] === undefined) return; // wasn't present today
+        minutes[of.playerId] += mins;
+        positionCount[of.playerId][of.position] = (positionCount[of.playerId][of.position] || 0) + 1;
+        if (ivIdx === 0 && isStriker(of.position)) strikerStarts[of.playerId] += 1;
       });
       if (ivIdx === 0) {
         (iv.benched || []).forEach((playerId) => {
-          if (timesStartedBenchToday[playerId] === undefined) return;
-          timesStartedBenchToday[playerId] += 1;
+          if (benchStarts[playerId] === undefined) return;
+          benchStarts[playerId] += 1;
         });
       }
     });
   });
 
-  const runningMinutes = { ...priorMinutes };
-  const runningPositionCount = {};
-  presentPlayers.forEach((p) => { runningPositionCount[p.id] = { ...priorPositionCount[p.id] }; });
+  // ---- Pick who starts on the pitch ----
+  // Sorted most-deserving-to-play first: most bench starts, then fewest minutes,
+  // then random. The last `g` in this list start on the bench.
+  const ranked = [...presentPlayers].sort((a, b) => {
+    const benchDiff = benchStarts[b.id] - benchStarts[a.id];
+    if (benchDiff !== 0) return benchDiff;
+    const minutesDiff = minutes[a.id] - minutes[b.id];
+    if (minutesDiff !== 0) return minutesDiff;
+    return Math.random() - 0.5;
+  });
 
-  const leastPlayedPosition = (playerId, availablePositions) => {
-    const player = presentPlayers.find((p) => p.id === playerId);
-    if (player?.preferredPosition && availablePositions.includes(player.preferredPosition)) {
-      return player.preferredPosition;
-    }
-    const sorted = [...availablePositions].sort((a, b) => {
-      const ca = runningPositionCount[playerId][a] || 0;
-      const cb = runningPositionCount[playerId][b] || 0;
-      if (ca !== cb) return ca - cb;
+  const starters = g <= 0 ? [...presentPlayers] : ranked.slice(0, P);
+  const benchedSet = new Set(g <= 0 ? [] : ranked.slice(P).map((p) => p.id));
+
+  // ---- Assign starting positions ----
+  // Striker is handed out first and explicitly, since it's the shirt everyone
+  // wants; the rest go to whoever has played them least today.
+  const onFieldAssignment = {};
+  const available = [...requiredPositions];
+
+  const strikerIdx = available.findIndex(isStriker);
+  if (strikerIdx !== -1) {
+    const strikerPos = available[strikerIdx];
+    const forStriker = [...starters].sort((a, b) => {
+      const stDiff = strikerStarts[a.id] - strikerStarts[b.id];
+      if (stDiff !== 0) return stDiff;
+      const played = (positionCount[a.id][strikerPos] || 0) - (positionCount[b.id][strikerPos] || 0);
+      if (played !== 0) return played;
       return Math.random() - 0.5;
-    });
-    return sorted[0];
-  };
-
-  // ---- Decide the starting XI: whoever has played the LEAST minutes today
-  // so far starts on the pitch. When minutes are tied (very common — a clean
-  // rotation tends to level everyone out after each full game), prefer to
-  // bench whoever has started FEWEST games on the bench so far today, so the
-  // same pair doesn't open on the bench two games running. Any remaining tie
-  // is broken randomly. ----
-  let onFieldAssignment = {}; // playerId -> position, for whoever is on the pitch right now
-  let benchedSet = new Set();
-
-  if (g <= 0) {
-    const available = [...requiredPositions];
-    const order = [...presentPlayers].sort(() => Math.random() - 0.5);
-    order.forEach((p) => {
-      const pos = leastPlayedPosition(p.id, available);
-      available.splice(available.indexOf(pos), 1);
-      onFieldAssignment[p.id] = pos;
-    });
-  } else {
-    const ranked = [...presentPlayers].sort((a, b) => {
-      const minutesDiff = runningMinutes[a.id] - runningMinutes[b.id];
-      if (minutesDiff !== 0) return minutesDiff;
-      // Tied on minutes: whoever has started on the bench MORE times today
-      // should play now (sort earlier), so bench duty rotates around the group
-      // instead of the same two kids repeatedly drawing the short straw.
-      const benchDiff = timesStartedBenchToday[b.id] - timesStartedBenchToday[a.id];
-      if (benchDiff !== 0) return benchDiff;
-      return Math.random() - 0.5;
-    });
-    ranked.slice(P).forEach((p) => benchedSet.add(p.id));
-    const available = [...requiredPositions];
-    ranked.slice(0, P).forEach((p) => {
-      const pos = leastPlayedPosition(p.id, available);
-      available.splice(available.indexOf(pos), 1);
-      onFieldAssignment[p.id] = pos;
-    });
+    })[0];
+    onFieldAssignment[forStriker.id] = strikerPos;
+    available.splice(strikerIdx, 1);
   }
 
-  const intervals = [];
+  const leastPlayedPosition = (playerId, positions) =>
+    [...positions].sort((a, b) => {
+      const ca = positionCount[playerId][a] || 0;
+      const cb = positionCount[playerId][b] || 0;
+      if (ca !== cb) return ca - cb;
+      return Math.random() - 0.5;
+    })[0];
 
-  for (let i = 0; i < numIntervals; i++) {
-    const startMin = i === 0 ? 0 : Math.round(i * subInterval * 10) / 10;
-    const endMin = Math.round(Math.min(duration, (i + 1) * subInterval) * 10) / 10;
+  starters.forEach((p) => {
+    if (onFieldAssignment[p.id]) return; // already given the striker shirt
+    if (p.preferredPosition && available.includes(p.preferredPosition)) {
+      onFieldAssignment[p.id] = p.preferredPosition;
+      available.splice(available.indexOf(p.preferredPosition), 1);
+      return;
+    }
+    const pos = leastPlayedPosition(p.id, available);
+    onFieldAssignment[p.id] = pos;
+    available.splice(available.indexOf(pos), 1);
+  });
+
+  // ---- Walk the blocks, substituting on the way ----
+  const intervals = [];
+  const benchedBlocks = {}; // how many blocks each player has sat out this game
+  presentPlayers.forEach((p) => { benchedBlocks[p.id] = 0; });
+
+  for (let i = 0; i < blocks; i++) {
+    const startMin = Math.round(i * blockLength * 1000) / 1000;
+    const endMin = Math.round(Math.min(duration, (i + 1) * blockLength) * 1000) / 1000;
     const intervalMins = endMin - startMin;
 
     if (i > 0 && g > 0) {
-      // Substitute exactly `g` players: whoever's played the MOST minutes so
-      // far comes off, whoever's played the LEAST comes on — a continuously
-      // playing kid who isn't in either group simply isn't touched, so they
-      // stay in their role. Incoming players take over the exact position(s)
-      // vacated, rather than everyone being reassigned from scratch.
+      // Bring off whoever has sat out least this game (and most minutes overall);
+      // bring on whoever has sat out most. Anyone not in either group is left
+      // completely untouched, so they keep their position rather than being
+      // shuffled around mid-game.
       const onFieldIds = Object.keys(onFieldAssignment);
-      const benchIds = [...benchedSet];
-
       const comingOff = [...onFieldIds]
         .sort((a, b) => {
-          const diff = runningMinutes[b] - runningMinutes[a];
-          if (diff !== 0) return diff;
+          const benchDiff = benchedBlocks[a] - benchedBlocks[b];
+          if (benchDiff !== 0) return benchDiff;
+          const minsDiff = minutes[b] - minutes[a];
+          if (minsDiff !== 0) return minsDiff;
           return Math.random() - 0.5;
         })
         .slice(0, g);
 
-      const comingOn = [...benchIds]
+      const comingOn = [...benchedSet]
         .sort((a, b) => {
-          const diff = runningMinutes[a] - runningMinutes[b];
-          if (diff !== 0) return diff;
+          const benchDiff = benchedBlocks[b] - benchedBlocks[a];
+          if (benchDiff !== 0) return benchDiff;
+          const minsDiff = minutes[a] - minutes[b];
+          if (minsDiff !== 0) return minsDiff;
           return Math.random() - 0.5;
         })
         .slice(0, g);
 
-      const vacatedPositions = comingOff.map((id) => onFieldAssignment[id]);
-      const incomingOrder = [...comingOn].sort(() => Math.random() - 0.5);
-
-      incomingOrder.forEach((playerId) => {
-        // Among the spots actually up for grabs this substitution, prefer
-        // whichever one this player has played least — a little extra
-        // fairness on top of the raw handoff, when there's a genuine choice.
-        vacatedPositions.sort((a, b) => {
-          const ca = runningPositionCount[playerId][a] || 0;
-          const cb = runningPositionCount[playerId][b] || 0;
-          return ca - cb;
-        });
-        const pos = vacatedPositions.shift();
-        onFieldAssignment[playerId] = pos;
-      });
-
+      const vacated = comingOff.map((id) => onFieldAssignment[id]);
       comingOff.forEach((id) => {
         delete onFieldAssignment[id];
         benchedSet.add(id);
       });
-      comingOn.forEach((id) => benchedSet.delete(id));
+
+      [...comingOn].sort(() => Math.random() - 0.5).forEach((playerId) => {
+        vacated.sort((a, b) => {
+          const ca = positionCount[playerId][a] || 0;
+          const cb = positionCount[playerId][b] || 0;
+          return ca - cb;
+        });
+        onFieldAssignment[playerId] = vacated.shift();
+        benchedSet.delete(playerId);
+      });
     }
 
     const onField = Object.entries(onFieldAssignment).map(([playerId, position]) => ({ playerId, position }));
     const benched = [...benchedSet];
 
     onField.forEach(({ playerId, position }) => {
-      runningMinutes[playerId] += intervalMins;
-      runningPositionCount[playerId][position] = (runningPositionCount[playerId][position] || 0) + 1;
+      minutes[playerId] += intervalMins;
+      positionCount[playerId][position] = (positionCount[playerId][position] || 0) + 1;
     });
+    benched.forEach((id) => { benchedBlocks[id] += 1; });
 
     intervals.push({ index: i, startMin, endMin, onField, benched });
   }
 
   return { intervals };
+}
+
+// Per-player totals for a whole match day, so fairness can be eyeballed rather
+// than taken on trust.
+function computeMatchdayFairness(matchday, roster) {
+  const stats = {};
+  (matchday.presentPlayerIds || []).forEach((id) => {
+    stats[id] = { name: roster.find((r) => r.id === id)?.name || "?", minutes: 0, benchStarts: 0, strikerStarts: 0, positions: {} };
+  });
+  (matchday.games || []).forEach((game) => {
+    (game.intervals || []).forEach((iv, ivIdx) => {
+      const mins = (iv.endMin ?? 0) - (iv.startMin ?? 0);
+      (iv.onField || []).forEach((of) => {
+        if (!stats[of.playerId]) return;
+        stats[of.playerId].minutes += mins;
+        stats[of.playerId].positions[of.position] = (stats[of.playerId].positions[of.position] || 0) + 1;
+        if (ivIdx === 0 && (of.position === "ST" || of.position === "CF")) stats[of.playerId].strikerStarts += 1;
+      });
+      if (ivIdx === 0) {
+        (iv.benched || []).forEach((id) => { if (stats[id]) stats[id].benchStarts += 1; });
+      }
+    });
+  });
+  return stats;
 }
 
 // --- MATCHDAY CARD COMPONENT ---
@@ -182,7 +243,7 @@ function MatchDayCard({ matchday, roster, formats, onUpdateMatchday, onDelete, f
   const [selectedFormatId, setSelectedFormatId] = useState(formats[0]?.id || '');
   const [opponent, setOpponent] = useState('');
   const [gameDuration, setGameDuration] = useState(10);
-  const [subInterval, setSubInterval] = useState(2);
+  const [numBlocks, setNumBlocks] = useState(3);
   const [isMatchdayCollapsed, setIsMatchdayCollapsed] = useState(() => {
     const games = matchday.games || [];
     return games.length > 0 && games.every((g) => g.played);
@@ -190,18 +251,17 @@ function MatchDayCard({ matchday, roster, formats, onUpdateMatchday, onDelete, f
   const [collapsedGames, setCollapsedGames] = useState({});
 
   const presentPlayers = roster.filter((p) => (matchday.presentPlayerIds || []).includes(p.id));
+  const fairness = useMemo(() => computeMatchdayFairness(matchday, roster), [matchday, roster]);
   const isPastEvent = matchday.date < todayStr();
 
-  // Auto-set duration and sub interval based on player count defaults
+  // Default the number of rotation blocks to whatever divides the squad evenly
+  // for the selected format (6 players in a 4v4 -> 3 blocks, so everyone sits
+  // exactly once; 5 players -> 5 blocks).
   useEffect(() => {
-    if (presentPlayers.length === 5) {
-      setGameDuration(10);
-      setSubInterval(2);
-    } else if (presentPlayers.length === 6) {
-      setGameDuration(10);
-      setSubInterval(3.5);
-    }
-  }, [presentPlayers.length]);
+    const fmt = formats.find((f) => f.id === selectedFormatId) || formats[0];
+    if (!fmt || !presentPlayers.length) return;
+    setNumBlocks(suggestedBlocks(presentPlayers.length, fmt.positions.length));
+  }, [presentPlayers.length, selectedFormatId, formats]);
 
   useEffect(() => {
     if (!selectedFormatId && formats.length > 0) {
@@ -235,7 +295,7 @@ function MatchDayCard({ matchday, roster, formats, onUpdateMatchday, onDelete, f
         presentPlayers,
         fmt.positions,
         Number(gameDuration),
-        Number(subInterval),
+        Number(numBlocks),
         [...(matchday.games || []), ...newGames]
       );
 
@@ -250,7 +310,7 @@ function MatchDayCard({ matchday, roster, formats, onUpdateMatchday, onDelete, f
         formatName: fmt.name,
         positions: fmt.positions,
         duration: Number(gameDuration),
-        subInterval: Number(subInterval),
+        numBlocks: Number(numBlocks),
         opponent: opponent.trim(),
         played: isPastEvent,
         intervals: plan.intervals
@@ -288,7 +348,7 @@ function MatchDayCard({ matchday, roster, formats, onUpdateMatchday, onDelete, f
       presentPlayers,
       fmt.positions || game.positions,
       game.duration,
-      game.subInterval,
+      game.numBlocks || Math.max(1, Math.round(game.duration / (game.subInterval || 2))),
       matchday.games.filter((g) => g.id !== gameId)
     );
 
@@ -348,8 +408,11 @@ function MatchDayCard({ matchday, roster, formats, onUpdateMatchday, onDelete, f
                 <TextInput type="number" value={gameDuration} onChange={(e) => setGameDuration(e.target.value)} COLORS={COLORS} />
               </div>
               <div>
-                <Label COLORS={COLORS}>Sub every (mins)</Label>
-                <TextInput type="number" step="0.5" value={subInterval} onChange={(e) => setSubInterval(e.target.value)} COLORS={COLORS} />
+                <Label COLORS={COLORS}>Rotation blocks</Label>
+                <TextInput type="number" min="1" value={numBlocks} onChange={(e) => setNumBlocks(e.target.value)} COLORS={COLORS} />
+                <p className="text-[11px] mt-1" style={{ color: COLORS.inkSoft }}>
+                  {Number(numBlocks) > 0 ? `${fmtTime(Number(gameDuration) / Number(numBlocks))} each` : ""}
+                </p>
               </div>
             </div>
             <div className="flex items-end gap-2">
@@ -398,7 +461,7 @@ function MatchDayCard({ matchday, roster, formats, onUpdateMatchday, onDelete, f
                           {game.intervals.map((iv) => (
                             <div key={iv.index} className="text-xs rounded-md px-2 py-1.5" style={{ background: COLORS.chalkDim }}>
                               <span className="font-mono font-semibold" style={{ color: COLORS.inkSoft, fontFamily: "JetBrains Mono" }}>
-                                {iv.startMin}–{iv.endMin}m
+                                {fmtTime(iv.startMin)}–{fmtTime(iv.endMin)}
                               </span>
                               <span className="ml-2" style={{ color: COLORS.ink }}>
                                 {iv.onField.map((of) => {
@@ -451,6 +514,42 @@ function MatchDayCard({ matchday, roster, formats, onUpdateMatchday, onDelete, f
               )}
             </div>
           </div>
+
+          {(matchday.games || []).length > 0 && (
+            <div className="rounded-lg border p-3" style={{ borderColor: "#E4DFD0" }}>
+              <div className="text-xs font-bold uppercase tracking-wide mb-2" style={{ color: COLORS.inkSoft }}>
+                Fairness Check
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs" style={{ color: COLORS.ink }}>
+                  <thead>
+                    <tr style={{ color: COLORS.inkSoft }}>
+                      <th className="text-left font-bold py-1 pr-3">Player</th>
+                      <th className="text-right font-bold py-1 px-2">Mins</th>
+                      <th className="text-right font-bold py-1 px-2">Bench starts</th>
+                      <th className="text-right font-bold py-1 px-2">ST starts</th>
+                      <th className="text-left font-bold py-1 pl-2">Positions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(fairness)
+                      .sort((a, b) => a[1].name.localeCompare(b[1].name))
+                      .map(([pid, st]) => (
+                        <tr key={pid} style={{ borderTop: "1px solid #EDE9DE" }}>
+                          <td className="py-1 pr-3 font-semibold">{st.name}</td>
+                          <td className="py-1 px-2 text-right font-mono" style={{ fontFamily: "JetBrains Mono" }}>{fmtTime(st.minutes)}</td>
+                          <td className="py-1 px-2 text-right font-mono" style={{ fontFamily: "JetBrains Mono" }}>{st.benchStarts}</td>
+                          <td className="py-1 px-2 text-right font-mono" style={{ fontFamily: "JetBrains Mono" }}>{st.strikerStarts}</td>
+                          <td className="py-1 pl-2" style={{ color: COLORS.inkSoft }}>
+                            {Object.entries(st.positions).map(([k, v]) => `${k} ${v}`).join(", ") || "—"}
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           <div className="flex items-center gap-2 pt-1">
             <Button variant="ghost" size="sm" icon={CheckCircle2} onClick={markAllComplete} COLORS={COLORS}>
@@ -1164,6 +1263,7 @@ export default function App() {
             drills={drills}
             categories={categories}
             sessionThemes={sessionThemes}
+            sessions={sessions}
             persistDrills={persistDrills}
             persistCategories={persistCategories}
             persistSessionThemes={persistSessionThemes}
@@ -1399,6 +1499,7 @@ function SessionRow({ session, drills, ratings, onComplete, onDelete, onRate, is
 }
 
 function PlanTab({ methods, drills, drillsByCategory, sessionThemes, sessions, persistSessions, persistDrills, ratings, persistRatings, avgRating, flash, COLORS }) {
+  const drillUsage = useMemo(() => computeDrillUsage(sessions), [sessions]);
   const [methodId, setMethodId] = useState(methods[0]?.id || "");
   const [theme, setTheme] = useState(sessionThemes[0] || "Shooting");
   const [date, setDate] = useState(todayStr());
@@ -1442,8 +1543,8 @@ function PlanTab({ methods, drills, drillsByCategory, sessionThemes, sessions, p
   const leastUsedPick = (category) => {
     const pool = getPool(category, theme, drillsByCategory);
     if (!pool.length) return "";
-    const min = Math.min(...pool.map((d) => d.timesUsed || 0));
-    const candidates = pool.filter((d) => (d.timesUsed || 0) === min);
+    const min = Math.min(...pool.map((d) => drillUsage[d.id] || 0));
+    const candidates = pool.filter((d) => (drillUsage[d.id] || 0) === min);
     return candidates[Math.floor(Math.random() * candidates.length)].id;
   };
 
@@ -1482,11 +1583,8 @@ function PlanTab({ methods, drills, drillsByCategory, sessionThemes, sessions, p
   const [showHistory, setShowHistory] = useState(false);
 
   const completeSession = async (session) => {
-    const nextDrills = drills.map((d) => {
-      const used = session.phases.some((p) => p.drillId === d.id);
-      return used ? { ...d, timesUsed: (d.timesUsed || 0) + 1 } : d;
-    });
-    await persistDrills(nextDrills);
+    // Usage counts are derived from completed sessions (see computeDrillUsage),
+    // so there's no separate counter to bump here.
     const nextSessions = sessions.map((s) => (s.id === session.id ? { ...s, status: "completed" } : s));
     await persistSessions(nextSessions);
     flash("Marked complete — drill usage updated");
@@ -1608,7 +1706,7 @@ function PlanTab({ methods, drills, drillsByCategory, sessionThemes, sessions, p
                               onChange={(v) => updateSlot(idx, { drillId: v })}
                               options={pool.map((d) => ({
                                 value: d.id,
-                                label: `${d.name}${d.timesUsed ? ` · used ${d.timesUsed}×` : ""}`,
+                                label: `${d.name}${drillUsage[d.id] ? ` · used ${drillUsage[d.id]}×` : ""}`,
                               }))}
                               placeholder="Select a drill…"
                               COLORS={COLORS}
@@ -2000,7 +2098,8 @@ function CalendarTab({ sessions, matchdays, calendarSettings, persistCalendarSet
   );
 }
 
-function DrillsTab({ drills, categories, sessionThemes, persistDrills, persistCategories, persistSessionThemes, avgRating, flash, COLORS }) {
+function DrillsTab({ drills, categories, sessionThemes, sessions, persistDrills, persistCategories, persistSessionThemes, avgRating, flash, COLORS }) {
+  const drillUsage = useMemo(() => computeDrillUsage(sessions), [sessions]);
   const [name, setName] = useState("");
   const [category, setCategory] = useState(categories[0] || "");
   const [drillTheme, setDrillTheme] = useState("");
@@ -2249,7 +2348,7 @@ function DrillsTab({ drills, categories, sessionThemes, persistDrills, persistCa
               )}
               <div className="flex items-center justify-between mt-3">
                 <span className="text-[11px] font-mono" style={{ color: COLORS.inkSoft, fontFamily: "JetBrains Mono" }}>
-                  Used {d.timesUsed || 0}×
+                  Used {drillUsage[d.id] || 0}×
                 </span>
                 {avgRating(d.id) != null ? (
                   <div className="flex items-center gap-1">
@@ -2570,6 +2669,23 @@ function TeamToggles({ teams, selected, onToggle, size = "sm", COLORS = DEFAULT_
 // Derives "games played" and "positions played" straight from the actual match day
 // data (only counting games marked as played), rather than a separately-stored
 // counter that can drift out of sync whenever a game is deleted or un-marked.
+// Derives how many times each drill has actually been used, straight from
+// completed sessions. The old stored `timesUsed` counter only ever incremented,
+// so deleting a session left the count permanently inflated.
+function computeDrillUsage(sessions) {
+  const usage = {};
+  (sessions || []).forEach((s) => {
+    if (s.status !== "completed") return;
+    const countedThisSession = new Set();
+    (s.phases || []).forEach((p) => {
+      if (!p.drillId || countedThisSession.has(p.drillId)) return;
+      countedThisSession.add(p.drillId);
+      usage[p.drillId] = (usage[p.drillId] || 0) + 1;
+    });
+  });
+  return usage;
+}
+
 function computeDerivedPlayerStats(matchdays) {
   const stats = {};
   (matchdays || []).forEach((md) => {
